@@ -5,6 +5,7 @@ export function launchSteps(selected) {
   const services = normalizeLaunchServices(selected);
   return [
     ['jailbreak', 'Jailbreak', true],
+    ['io', 'Console I/O', true],
     ['native', 'Botty+ app files', services.botty],
     ['kstuff', 'Send Kstuff', true],
     ['kstuff-wait', 'Kstuff startup allowance · 10 seconds', true],

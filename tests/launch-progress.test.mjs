@@ -120,7 +120,7 @@ for (const failed of [false, true]) test('elapsed timer is quiet, absent during 
   const announced = f.elements['launch-progress-status'].textContent;
   f.advance(3000);
   assert.equal(f.elements['launch-progress-status'].textContent, announced);
-  const row = f.elements['launch-steps'].children[5];
+  const row = f.elements['launch-steps'].children.find(item => item.children[0].textContent === 'A53 PPR confirmation');
   assert.equal(row.attributes['aria-current'], 'step');
   assert.equal(row.children[1].textContent, 'Waiting for you');
   f.view.event({ id: 'ppr-confirm', state: failed ? 'failed' : 'completed' });
@@ -130,8 +130,9 @@ for (const failed of [false, true]) test('elapsed timer is quiet, absent during 
   f.advance(10000);
   f.view.event({ id: 'ftp', state: 'active' });
   assert.equal(f.elements['launch-elapsed'].textContent, '7s elapsed');
-  assert.equal(f.elements['launch-steps'].children[7].dataset.state, failed ? 'skipped' : 'pending');
-  if (failed) assert.equal(f.elements['launch-steps'].children[7].children[2].textContent, 'Not run; launch stopped.');
+  const ftp = f.elements['launch-steps'].children.find(item => item.children[0].textContent === 'FTP');
+  assert.equal(ftp.dataset.state, failed ? 'skipped' : 'pending');
+  if (failed) assert.equal(ftp.children[2].textContent, 'Not run; launch stopped.');
 });
 
 test('unsupported firmware still emits terminal failure before any operation', async () => {

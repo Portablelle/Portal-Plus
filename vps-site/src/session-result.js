@@ -9,12 +9,12 @@ const labels = {
 
 export function createSessionResult(services) {
   const requested = {
-    jailbreak: true, native: services.botty, kstuff: true, ppr: services.ppr,
+    jailbreak: true, io: true, native: services.botty, kstuff: true, ppr: services.ppr,
     shadowmount: true, ftp: services.ftp, rtorrent: services.rtorrent || services.botty,
     manager: services.botty, cheatrunner: services.cheatrunner, codex: services.codex,
   };
   const names = {
-    jailbreak: 'Jailbreak', native: 'Botty+ app files', kstuff: 'Kstuff', ppr: 'A53 PPR',
+    jailbreak: 'Jailbreak', io: 'Console I/O', native: 'Botty+ app files', kstuff: 'Kstuff', ppr: 'A53 PPR',
     shadowmount: 'ShadowMountPlus', ftp: 'FTP', rtorrent: 'rTorrent',
     manager: 'Botty+ service', cheatrunner: 'CheatRunner', codex: 'Codex PS5',
   };
