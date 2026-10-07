@@ -78,6 +78,14 @@ test('Botty toggles preserve the independent preference even without storage', (
   assert.equal(f.control.lock().rtorrent, false);
 });
 
+test('multi-service summaries name the effective services in launch option order', () => {
+  const standalone = fixture(JSON.stringify({ ftp: true, cheatrunner: true, codex: true, botty: false, rtorrent: false }));
+  assert.equal(standalone.elements['launch-options-summary'].textContent, 'FTP, CheatRunner, Codex PS5');
+  const bundled = fixture(JSON.stringify({ botty: true, rtorrent: true, ppr: true, codex: true }));
+  assert.equal(bundled.elements['launch-options-summary'].textContent,
+    'Botty+ (includes rTorrent), FTP, CheatRunner, A53 PPR, Codex PS5');
+});
+
 test('incompatible PPR stays out of the launch but retains its saved opt-in', () => {
   const f = fixture('{"ppr":true}', false, '11.60');
   assert.equal(f.elements['ppr-availability'].hidden, false);
