@@ -22,7 +22,7 @@ export function failureStatus(error) {
 
 export function safeLog(message) {
   return String(message)
-    .replace(/(https?:\/\/)[^\s/@]+:[^\s/@]+@/gi, '$1[redacted]@')
+    .replace(/(https?:\/\/)[^\s/]*@/gi, '$1[redacted]@')
     .replace(/\b(Bearer|Basic)\s+[A-Za-z0-9+/_.=-]+/gi, '$1 [redacted]')
     .replace(/(["']?(?:password|previousPassword|rpc-password|token|api[_-]?key|secret|authorization|cookie)["']?\s*[:=]\s*)(?:"[^"\n]*"|'[^'\n]*'|[^\s,;&}]+)/gi, '$1[redacted]');
 }

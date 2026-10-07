@@ -8,9 +8,10 @@ import { sha256 } from '../vps-site/src/transmission.js';
 import { cheatRunnerStatus } from '../vps-site/src/cheatrunner.js';
 import { codexStatus } from '../vps-site/src/codex.js';
 import { NativeIO } from '../vps-site/src/botty-native.js';
+import { sendPayload } from '../vps-site/src/payload-sender.js';
 
 const firmwareSource = await readFile(new URL('../vps-site/src/firmware.js', import.meta.url), 'utf8');
-const siteSource = (await readFile(new URL('../vps-site/src/site.js', import.meta.url), 'utf8')).replace(/^import .*;\s*$/gm, '');
+const siteSource = (await readFile(new URL('../vps-site/src/site.js', import.meta.url), 'utf8')).replace(/^import .*;\s*$/gm, '').replace('import("./relapse_exploit.js")', 'loadKernelModule()');
 for (const [agent, code, label] of [
   ['Desktop browser', 'NON_PS5_BROWSER', 'PS5 browser required'],
   ['PlayStation 5', 'FIRMWARE_UNDETECTED', 'Firmware not detected'],
@@ -105,8 +106,41 @@ test('logs redact credentials while retaining technical context', () => {
   const line=safeLog('HTTP 401 https://user:private@host/path password="private" token=private Authorization: Bearer private');
   assert.doesNotMatch(line,/private/); assert.match(line,/HTTP 401/);
 });
+test('URL credentials with raw or encoded at-signs and empty passwords are fully redacted',()=>{
+  for(const credential of ['user:SIMULATED@PASSWORD','user:SIMULATED%40PASSWORD','user:','user@name:SIMULATED','user']) {
+    assert.equal(safeLog('Download https://'+credential+'@host/path failed'),'Download https://[redacted]@host/path failed');
+  }
+});
+test('Codex status includes the unconfirmed-engine code without claiming a busy engine',()=>{
+  const status=codexStatus({ready:true,updatePending:true,code:'ENGINE_STATE_UNCONFIRMED',reason:'Engine state could not be verified.'});
+  assert.match(status,/\[ENGINE_STATE_UNCONFIRMED\]/);assert.doesNotMatch(status,/busy/);
+});
+for(const failure of ['http','fetch','body'])test('pre-delivery payload failure identifies the cause without claiming uncertain delivery: '+failure,async()=>{
+  const fetchFile=async()=>{
+    if(failure==='fetch')throw Error('SIMULATED fetch rejection');
+    return {ok:failure!=='http',status:503,arrayBuffer:async()=>{throw Error('SIMULATED body rejection');}};
+  };
+  await assert.rejects(sendPayload({p:{malloc:()=>assert.fail('must not allocate')},chain:{}},'kstuff.elf',fetchFile),error=>{
+    assert.equal(error.code,failure==='http'?'PAYLOAD_HTTP_ERROR':'PAYLOAD_FETCH_FAILED');
+    assert.match(error.action,/This payload was not delivered/);
+    assert.doesNotMatch(error.action,/uncertain|Restart|try again/i);return true;
+  });
+});
+for(const successfulWrites of [0,1])test('rejected payload WRITE retains partial-delivery guidance and closes the socket: '+successfulWrites,async()=>{
+  const bytes=new Uint8Array(70000);bytes.set([127,69,76,70]);let writes=0;const closed=[];
+  const runtime={p:{malloc:size=>({backing:new Uint8Array(size),add32(){return this;}})},chain:{syscall:async(number,...args)=>{
+    if(number===97)return {low:42};if(number===98)return {low:0};if(number===6){closed.push(args[0]);return {low:0};}
+    if(number===4){if(writes++===successfulWrites)throw Error('SIMULATED ROP write rejection');return {low:args[2]};}
+    assert.fail('unexpected syscall');
+  }}};
+  await assert.rejects(sendPayload(runtime,'kstuff.elf',async()=>({ok:true,arrayBuffer:async()=>bytes.buffer})),error=>{
+    assert.equal(error.code,'PAYLOAD_TRANSFER_INTERRUPTED');assert.match(error.action,/Restart your PS5/);
+    assert.match(error.message,/ROP write rejection/);assert.equal(error.cause.message,'SIMULATED ROP write rejection');return true;
+  });
+  assert.deepEqual(closed,[42]);assert.equal(writes,successfulWrites+1);
+});
 
-function screen(agent, launch) {
+function screen(agent, launch, overrides = {}) {
   const elements = new Map();
   for (const id of ['console','launch','status','firmware','cheatrunner']) elements.set(id, {
     textContent:'',hidden:true,children:[],attributes:{},listeners:{},
@@ -118,11 +152,22 @@ function screen(agent, launch) {
   const context={document,window:{},navigator:{userAgent:agent},performance:{now:()=>0},
     requestAnimationFrame:callback=>callback(),setTimeout:callback=>callback(),
     bindLaunchOptions:()=>({lock:()=>({codex:true})}),launchSession:launch,
-    cheatRunnerStatus,codexStatus,atStage,failureStatus,safeLog};
+    cheatRunnerStatus,codexStatus,atStage,diagnosticError,failureStatus,safeLog,...overrides};
   vm.runInNewContext(firmwareSource,context);
   vm.runInNewContext(siteSource,context);
-  return {elements,document};
+  return {elements,document,context};
 }
+test('dynamic kernel module rejection has its own stage and explains why WebKit state is uncertain',async()=>{
+  const view=screen('PlayStation 5/13.00',async()=>assert.fail('not used'),{
+    establishPrimitive:async()=>({read8(){}}),installWindowP:value=>value,
+    __ps5NativeCtor:0x800000000,OFFSET_wk_host_constructor_candidates:[0],
+    loadKernelModule:async()=>{throw Error('SIMULATED module fetch failure');},main:()=>assert.fail('must not execute kernel exploit'),
+  });
+  await assert.rejects(view.context.run(),error=>{
+    assert.equal(error.stage,'Kernel exploit module loading');assert.equal(error.code,'JAILBREAK_MODULE_UNAVAILABLE');
+    assert.match(error.message,/module fetch failure/);assert.match(failureStatus(error),/WebKit has already run/);return true;
+  });
+});
 for (const agent of ['Desktop','PlayStation 5','PlayStation 5/99.00']) test('rejected firmware keeps the rendered LAUNCH disabled: '+agent, async()=>{
   const view=screen(agent,()=>assert.fail('must not launch'));
   assert.equal(view.elements.get('launch').disabled,true);

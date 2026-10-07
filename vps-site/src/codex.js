@@ -253,6 +253,6 @@ export async function startCodex(io, options = {}) {
 }
 export function codexStatus(result) {
   if (result?.diagnostic) return result.diagnostic;
-  if (result?.updatePending) return result.reason;
+  if (result?.updatePending) return result.code ? `[${result.code}] ${result.reason}` : result.reason;
   return result?.ready ? 'Codex ' + (result.version || 'PS5') + ' is ready. Open it in the game library; L1 connects ChatGPT, Triangle dictates.' : result?.reason || 'Codex PS5 is unavailable.';
 }

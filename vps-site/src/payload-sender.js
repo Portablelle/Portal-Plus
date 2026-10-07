@@ -8,9 +8,14 @@ import { diagnosticError } from './diagnostics.js';
 export async function sendPayload(runtime, name, fetchFile = fetch, delay = pause) {
   if (!FILES.includes(name)) throw new Error("Unknown payload.");
   if (!runtime || !runtime.p || !runtime.chain) throw new Error("Run Jailbreak first.");
-  const response = await fetchFile("./payloads/" + name, { cache: "no-store" });
-  if (!response.ok) throw diagnosticError('PAYLOAD_HTTP_ERROR', "Payload download failed: HTTP " + response.status);
-  const bytes = new Uint8Array(await response.arrayBuffer());
+  let response, bytes;
+  try {
+    response = await fetchFile("./payloads/" + name, { cache: "no-store" });
+    if (response.ok) bytes = new Uint8Array(await response.arrayBuffer());
+  } catch (error) {
+    throw Object.assign(diagnosticError('PAYLOAD_FETCH_FAILED', 'Payload download failed: ' + (error.message || String(error)), 'This payload was not delivered. Check the download error in the session log. This launch remains stopped.'), { cause: error });
+  }
+  if (!response.ok) throw diagnosticError('PAYLOAD_HTTP_ERROR', "Payload download failed: HTTP " + response.status, 'This payload was not delivered. Check the HTTP status in the session log. This launch remains stopped.');
   if (bytes.length < 4096 || bytes.length > 16 * 1024 * 1024 ||
       bytes[0] !== 0x7f || bytes[1] !== 0x45 || bytes[2] !== 0x4c || bytes[3] !== 0x46)
     throw diagnosticError('PAYLOAD_INVALID', "Invalid ELF payload download.", 'The download is not a valid ELF payload. Do not bypass validation.');
@@ -29,12 +34,15 @@ export async function sendPayload(runtime, name, fetchFile = fetch, delay = paus
     try {
       connected = ((await chain.syscall(SYS.CONNECT, fd, address, 16)).low | 0) === 0;
       if (connected) {
-        for (let offset = 0; offset < bytes.length;) {
-          const length = Math.min(65536, bytes.length - offset);
-          const written = (await chain.syscall(SYS.WRITE, fd, buffer.add32(offset), length)).low | 0;
-          if (written <= 0 || written > length)
-            throw diagnosticError('PAYLOAD_TRANSFER_INTERRUPTED', "Payload transfer interrupted. Restart the PS5 before trying again.", 'Partial payload delivery leaves the console state uncertain. Restart your PS5 before another launch.');
-          offset += written;
+        try {
+          for (let offset = 0; offset < bytes.length;) {
+            const length = Math.min(65536, bytes.length - offset);
+            const written = (await chain.syscall(SYS.WRITE, fd, buffer.add32(offset), length)).low | 0;
+            if (written <= 0 || written > length) throw Error('Payload write returned ' + written + ' for ' + length + ' bytes.');
+            offset += written;
+          }
+        } catch (error) {
+          throw Object.assign(diagnosticError('PAYLOAD_TRANSFER_INTERRUPTED', 'Payload transfer interrupted: ' + (error.message || String(error)), 'Partial payload delivery leaves the console state uncertain. Restart your PS5 before another launch.'), { cause: error });
         }
         return bytes.length;
       }

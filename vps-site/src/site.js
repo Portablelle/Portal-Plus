@@ -5,7 +5,7 @@ import { installWindowP } from "./utils/mem.js";
 
 import { cheatRunnerStatus } from './cheatrunner.js';
 import { codexStatus } from './codex.js';
-import { atStage, failureStatus, safeLog } from './diagnostics.js';
+import { atStage, diagnosticError, failureStatus, safeLog } from './diagnostics.js';
 import { bindLaunchOptions } from './launch-options.js';
 import { launchSession } from "./launch.js";
 
@@ -70,7 +70,12 @@ async function run() {
   const webKitBase = await atStage('WebKit exploit', getWebKitBase);
   writeLog(`WebKit base: 0x${webKitBase.toString(16)}`, "info");
 
-  await import("./relapse_exploit.js");
+  await atStage('Kernel exploit module loading', async () => {
+    try { await import("./relapse_exploit.js"); }
+    catch (error) {
+      throw Object.assign(diagnosticError('JAILBREAK_MODULE_UNAVAILABLE', error.message || String(error), 'The kernel exploit module could not be loaded. WebKit has already run, so console state is uncertain. Restart your PS5 before another launch.'), { cause: error });
+    }
+  });
   return await atStage('Kernel exploit', () => main(primitive));
 }
 
