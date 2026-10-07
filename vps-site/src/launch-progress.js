@@ -1,4 +1,5 @@
 import { normalizeLaunchServices } from './launch-options.js';
+import { optionalComponent } from './session-result.js';
 
 export function launchSteps(selected) {
   const services = normalizeLaunchServices(selected);
@@ -32,11 +33,13 @@ export async function launchStep(emit, id, action, { enabled = true, waiting = f
   emit({ id, state: waiting ? 'waiting' : 'active', detail });
   try {
     const result = await action();
-    const state = result?.deferred ? 'skipped' : result?.ready === false ? 'failed' : 'completed';
-    emit({ id, state, detail: result?.reason || (result?.updatePending ? 'Update pending; active work is preserved.' : completedDetail) });
+    const component = result && (result.ready !== undefined || result.deferred || result.updatePending)
+      ? optionalComponent(result, completedDetail) : null;
+    const state = component?.state === 'deferred' || component?.state === 'not_requested' ? 'skipped' : component?.state === 'failed' ? 'failed' : 'completed';
+    emit({ id, state, detail: component?.detail || completedDetail });
     return result;
   } catch (error) {
-    emit({ id, state: 'failed', detail: error.message || String(error) });
+    emit({ id, state: error.deferred ? 'skipped' : 'failed', detail: error.message || String(error) });
     throw error;
   }
 }
@@ -93,7 +96,10 @@ export function bindLaunchProgress(document, clock = {}) {
         ended = true;
         stopTimer();
         tick();
-        announcement.textContent = event.failed ? 'Launch stopped. Pending steps were not run.' : 'Launch finished. Check the step results and session log.';
+        if (event.failed) for (const row of rows.values()) {
+          if (row.item.dataset.state === 'pending') render(row, { state: 'skipped', detail: 'Not run; launch stopped.' });
+        }
+        announcement.textContent = event.failed ? 'Launch stopped. Remaining steps were not run.' : 'Launch finished. Check the step results and session log.';
         return;
       }
       const row = rows.get(event.id);

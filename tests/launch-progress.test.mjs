@@ -40,11 +40,14 @@ for (const botty of [false, true]) test('unselected steps are skipped; Botty ret
   assert.equal(f.calls.includes('rtorrent'), botty);
 });
 
-test('manual PPR confirmation gates mounting and remains a user wait until resolved', async () => {
+test('manual PPR confirmation gates mounting and remains a user wait until resolved', { timeout: 2000 }, async () => {
   let confirm;
-  const f = fixture({ confirmPpr: () => new Promise(resolve => { confirm = resolve; }) });
+  let reached;
+  const waiting = new Promise(resolve => { reached = resolve; });
+  const f = fixture({ confirmPpr: () => new Promise(resolve => { confirm = resolve; reached(); }) });
   const running = launchSession(f.options);
-  while (!confirm) await new Promise(resolve => setImmediate(resolve));
+  await Promise.race([waiting, running]);
+  assert.equal(typeof confirm, 'function', 'Launch must reach the manual PPR gate.');
   assert.equal(f.events.at(-1).id, 'ppr-confirm');
   assert.equal(f.events.at(-1).state, 'waiting');
   assert.equal(f.calls.includes('shadowmountplus.elf'), false);
@@ -73,7 +76,7 @@ test('optional failures and deferral use structured outcomes without changing co
   const f = fixture({ cheatrunner: async () => ({ ready: false, deferred: true, reason: 'Active work; deferred.' }), manager: async () => ({ updatePending: true }) });
   await launchSession(f.options);
   assert.ok(f.events.some(event => event.id === 'cheatrunner' && event.state === 'skipped' && event.detail === 'Active work; deferred.'));
-  assert.match(f.events.find(event => event.id === 'manager' && event.state === 'completed').detail, /Update pending/);
+  assert.match(f.events.find(event => event.id === 'manager' && event.state === 'completed').detail, /next console session/);
 });
 
 test('progress observer failure cannot interrupt the launch or payload delivery', async () => {
@@ -81,6 +84,16 @@ test('progress observer failure cannot interrupt the launch or payload delivery'
   await launchSession(f.options);
   assert.ok(f.calls.includes('shadowmountplus.elf'));
   assert.ok(f.calls.includes('codex'));
+});
+
+test('Codex returned and thrown deferrals agree with the shared session outcome', async () => {
+  for (const codex of [async () => ({ ready: false, deferred: true, reason: 'Active work.' }), async () => { throw Object.assign(Error('Active work.'), { deferred: true }); }]) {
+    const f = fixture({ codex });
+    const result = await launchSession(f.options);
+    assert.equal(result.summary.components.codex.state, 'deferred');
+    assert.deepEqual(f.events.find(event => event.id === 'codex' && event.state !== 'active'), { id: 'codex', state: 'skipped', detail: 'Active work.' });
+    assert.deepEqual(f.events.at(-1), { type: 'end', failed: false });
+  }
 });
 
 function uiFixture() {
@@ -117,7 +130,8 @@ for (const failed of [false, true]) test('elapsed timer is quiet, absent during 
   f.advance(10000);
   f.view.event({ id: 'ftp', state: 'active' });
   assert.equal(f.elements['launch-elapsed'].textContent, '7s elapsed');
-  assert.equal(f.elements['launch-steps'].children[7].dataset.state, 'pending');
+  assert.equal(f.elements['launch-steps'].children[7].dataset.state, failed ? 'skipped' : 'pending');
+  if (failed) assert.equal(f.elements['launch-steps'].children[7].children[2].textContent, 'Not run; launch stopped.');
 });
 
 test('unsupported firmware still emits terminal failure before any operation', async () => {

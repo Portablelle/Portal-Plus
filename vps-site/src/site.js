@@ -3,10 +3,10 @@ import { installWindowP } from "./utils/mem.js";
 
 
 
-import { cheatRunnerStatus } from './cheatrunner.js';
+import { renderSessionResult } from './session-result.js';
 import { bindLaunchOptions } from './launch-options.js';
 import { launchSession } from "./launch.js";
-import { bindLaunchProgress } from './launch-progress.js';
+import { bindLaunchProgress, progressReporter } from './launch-progress.js';
 
 
 const output = document.getElementById("console");
@@ -78,6 +78,7 @@ const rejection = window.firmware.rejection();
 let started = false;
 const launchOptions = bindLaunchOptions(document, window);
 const progress = bindLaunchProgress(document);
+const reportProgress = progressReporter(event => progress.event(event));
 document.getElementById("firmware").textContent = rejection ? "PS5 browser required" : "PS5 / " + window.fw_str;
 button.disabled = Boolean(rejection);
 if (rejection) status.textContent = "Open this page on your PS5 to launch.";
@@ -87,7 +88,7 @@ button.addEventListener("click", async () => {
   const services = launchOptions.lock();
   started = true;
   launchStartedAt = performance.now();
-  progress.start(services);
+  try { progress.start(services); } catch {}
   document.body.dataset.state = "launching";
   button.disabled = true;
   button.textContent = "LAUNCHING";
@@ -101,7 +102,7 @@ button.addEventListener("click", async () => {
       jailbreak: async () => { await window.offsetsReady; return await run(); },
       report,
       services,
-      onProgress: event => progress.event(event),
+      onProgress: reportProgress,
       firmware: window.fw_str,
       confirmPpr: () => new Promise(resolve => {
         report('Wait for the A53 PPR success notification, then select CONTINUE. On failure, restart your PS5.');
@@ -117,22 +118,21 @@ button.addEventListener("click", async () => {
         }, { once: true });
       }),
     });
-    button.textContent = "READY";
-    status.textContent = result.native?.skipped
-      ? 'Jailbreak ready. Your selected services are available.'
-      : result.manager?.updatePending
-      ? "Press PS and open Botty+. Service update applies next console session; current work continues."
-      : "Press PS and open Botty+. Allow time for the home screen to refresh.";
-    status.textContent += ' ' + cheatRunnerStatus(result.cheatrunner);
+    button.textContent = "LAUNCH";
+    renderSessionResult(document, result.summary);
+    status.textContent = result.summary.outcome === 'complete'
+      ? 'Session complete. See component confirmations below.'
+      : 'Jailbreak succeeded. Review warnings and confirmation limits below; confirmed services remain available.';
     document.getElementById('cheatrunner').hidden = !result.cheatrunner?.ready;
     document.body.dataset.state = "ready";
   } catch (error) {
     button.textContent = "STOPPED";
     status.textContent = "Setup stopped. Restart your PS5 before trying again.";
+    if (error.sessionResult) renderSessionResult(document, error.sessionResult);
     writeLog(error.message || String(error), "error");
     document.body.dataset.state = "error";
   } finally {
-    progress.event({ type: 'end', failed: document.body.dataset.state === 'error' });
+    reportProgress({ type: 'end', failed: document.body.dataset.state === 'error' });
     button.setAttribute("aria-busy", "false");
   }
 });
