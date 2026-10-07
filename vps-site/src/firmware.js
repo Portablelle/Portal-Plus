@@ -15,19 +15,22 @@ const firmwareVersion = firmwareMatch ? firmwareMatch[1] : "";
 
 window.fw_str = firmwareVersion;
 window.firmware = {
-  rejection() {
+  diagnostic() {
     if (!firmwareUserAgent.includes("PlayStation 5")) {
-      return "PlayStation 5 Required";
+      return { code: 'NON_PS5_BROWSER', label: 'PS5 browser required', message: 'This browser is not identified as a PS5. Open this page in your PS5 browser.' };
     }
 
     if (!firmwareVersion) {
-      return "FW version not found";
+      return { code: 'FIRMWARE_UNDETECTED', label: 'Firmware not detected', message: 'The browser identifies as a PS5, but its firmware version could not be read. Check the version in console settings; LAUNCH remains disabled.' };
     }
 
     if (!supportedFirmware.includes(firmwareVersion)) {
-      return `FW ${firmwareVersion} is not supported`;
+      return { code: 'FIRMWARE_UNSUPPORTED', label: `FW ${firmwareVersion} unsupported`, message: `Firmware ${firmwareVersion} is not supported by this portal. LAUNCH remains disabled. Do not update the console as a troubleshooting step.` };
     }
 
     return null;
+  },
+  rejection() {
+    return this.diagnostic()?.message || null;
   },
 };

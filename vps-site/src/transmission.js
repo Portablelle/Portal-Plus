@@ -1,4 +1,5 @@
 import { sleep } from './ps5-io.js';
+import { diagnosticError } from './diagnostics.js';
 
 export const ROOT = '/data/botty/transmission';
 export const STATE = ROOT + '/state';
@@ -11,7 +12,7 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 
 export async function sha256(bytes) {
-  if (!globalThis.crypto || !crypto.subtle) throw Error('Open this portal over HTTPS for verified installation.');
+  if (!globalThis.crypto || !crypto.subtle) throw diagnosticError('VERIFICATION_UNAVAILABLE', 'Open this portal over HTTPS for verified installation.', 'Verified installation requires Web Crypto. Use the HTTPS portal in a new session; if already on HTTPS, browser support is uncertain.');
   const digest = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
   return Array.from(digest, b => b.toString(16).padStart(2, '0')).join('');
 }
