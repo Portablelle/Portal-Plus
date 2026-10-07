@@ -120,6 +120,33 @@ test('recognized newer native app does not claim package file verification', asy
   assert.doesNotMatch(summary.components.native.detail, /files verified/i);
 });
 
+test('diagnostic merge preserves private-log restrictions and earlier results in summary and progress', async () => {
+  const events = [];
+  await assert.rejects(launchSession(fixture({ onProgress: event => events.push(event), manager: async () => {
+    throw Object.assign(Error('SIMULATED_PRIVATE_NATIVE_OUTPUT'), { code: 'SERVICE_NOT_READY', logMessage: 'Native details remain in the private startup.log.' });
+  } })), error => {
+    assert.equal(error.stage, 'Botty+ manager installation / startup');
+    assert.equal(error.code, 'SERVICE_NOT_READY');
+    assert.equal(error.sessionResult.components.ftp.state, 'ready');
+    assert.match(error.sessionResult.components.manager.detail, /private startup.log/);
+    assert.doesNotMatch(JSON.stringify(error.sessionResult), /SIMULATED_PRIVATE_NATIVE_OUTPUT/);
+    assert.doesNotMatch(JSON.stringify(events), /SIMULATED_PRIVATE_NATIVE_OUTPUT/);
+    return true;
+  });
+});
+
+test('optional diagnostic failures retain structured deferral and redact all rendered outcomes', async () => {
+  const events = [];
+  const { summary, codex } = await launchSession(fixture({ services: { codex: true }, onProgress: event => events.push(event), codex: async () => {
+    throw Object.assign(Error('token=SIMULATED_SECRET'), { deferred: true, code: 'ACTIVE_WORK', action: 'Wait for active work to finish.' });
+  } }));
+  assert.equal(codex.deferred, true);
+  assert.equal(summary.components.codex.state, 'deferred');
+  assert.match(summary.components.codex.detail, /ACTIVE_WORK/);
+  assert.doesNotMatch(JSON.stringify(summary), /SIMULATED_SECRET/);
+  assert.doesNotMatch(JSON.stringify(events), /SIMULATED_SECRET/);
+});
+
 test('complete classification requires every requested component to be ready', () => {
   const result = createSessionResult({});
   for (const component of Object.values(result.components)) if (component.state !== 'not_requested') component.state = 'ready';

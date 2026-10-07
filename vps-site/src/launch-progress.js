@@ -1,5 +1,6 @@
 import { normalizeLaunchServices } from './launch-options.js';
 import { optionalComponent } from './session-result.js';
+import { safeLog } from './diagnostics.js';
 
 export function launchSteps(selected) {
   const services = normalizeLaunchServices(selected);
@@ -22,7 +23,7 @@ export function launchSteps(selected) {
 
 export function progressReporter(callback) {
   return event => {
-    try { callback?.(event); } catch {}
+    try { callback?.(event.detail ? { ...event, detail: safeLog(event.detail) } : event); } catch {}
   };
 }
 
@@ -40,7 +41,7 @@ export async function launchStep(emit, id, action, { enabled = true, waiting = f
     emit({ id, state, detail: component?.detail || completedDetail });
     return result;
   } catch (error) {
-    emit({ id, state: error.deferred ? 'skipped' : 'failed', detail: error.message || String(error) });
+    emit({ id, state: error.deferred ? 'skipped' : 'failed', detail: error.logMessage || error.message || String(error) });
     throw error;
   }
 }

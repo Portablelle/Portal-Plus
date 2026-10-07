@@ -1,5 +1,6 @@
 import { sha256, shortPassword } from './transmission.js';
 import { sleep, MAX_ELF_BYTES } from './ps5-io.js';
+import { diagnosticError } from './diagnostics.js';
 export const ROOT='/data/botty/rtorrent';
 export const STATE=ROOT+'/state';
 const VERSION='0.16.24-botty4';
@@ -8,16 +9,16 @@ const HASH = '4ddb0ef1be886de56d1b965bd10342672943f688be951284f932ef5a33e62f68';
 const enc=new TextEncoder(),dec=new TextDecoder();
 export async function installAndStart(io,options={}) {
   const report=options.report||(()=>{}),wait=options.wait||sleep,fetchFile=options.fetchFile||fetch,digest=options.digest||sha256;
-  if(await io.listening(9091)||(await io.processes()).some(p=>/^transmission/.test(p.name)))throw Error('Stop Transmission and migrate its downloads before starting rTorrent.');
+  if(await io.listening(9091)||(await io.processes()).some(p=>/^transmission/.test(p.name)))throw diagnosticError('TRANSMISSION_PRESENT', 'Stop Transmission and migrate its downloads before starting rTorrent.', 'A Transmission process or listener was detected. Preserve active downloads; confirm a safe stop and migration before using rTorrent in a new session.');
   const old=await io.readFile('/data/botty/transmission/state/settings.json',1024*1024);
   if(old){
     const saved=await io.readFile(STATE+'/migration.json',1024*1024);
     if(!saved||JSON.parse(dec.decode(saved)).status!=='complete')throw Error('Existing Transmission downloads need migration before rTorrent can start. Files were preserved.');
   }
   const response=await fetchFile(BASE+'manifest.json',{cache:'no-store'});
-  if(!response.ok)throw Error('rTorrent manifest unavailable.');
+  if(!response.ok)throw diagnosticError('PACKAGE_HTTP_ERROR', 'rTorrent manifest unavailable (HTTP '+response.status+').');
   const bytes=new Uint8Array(await response.arrayBuffer());
-  if(await digest(bytes)!==HASH)throw Error('rTorrent manifest verification failed.');
+  if(await digest(bytes)!==HASH)throw diagnosticError('PACKAGE_VERIFICATION_FAILED', 'rTorrent manifest verification failed.', 'Package integrity could not be verified. Do not bypass verification.');
   const manifest=JSON.parse(dec.decode(bytes));
   const allowed=['rtorrent.elf','rtorrent.rc','cacert.pem'];
   if(manifest.schema!==1||manifest.id!==VERSION||manifest.files.length!==3||new Set(manifest.files.map(f=>f.path)).size!==3)throw Error('Unexpected rTorrent package.');
@@ -36,5 +37,5 @@ export async function installAndStart(io,options={}) {
   for(const {file,data} of staged)if(file.path!=='rtorrent.elf')await io.writeFile(STATE+'/'+file.path,data);
   report('Starting rTorrent…');await io.sendElf(staged.find(item=>item.file.path==='rtorrent.elf').data);
   for(let i=0;i<80;i++){if(await io.listening(5001))return {engine:'rtorrent',version:VERSION};await wait(250);}
-  throw Error('rTorrent did not start. Its private runtime log contains details.');
+  throw diagnosticError('SERVICE_NOT_READY', 'rTorrent did not start. Its private runtime log contains details.', 'rTorrent readiness was not confirmed. Check the session log and private runtime log; do not launch again in this session.');
 }

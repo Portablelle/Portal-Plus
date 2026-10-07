@@ -1,3 +1,5 @@
+import { safeLog } from './diagnostics.js';
+
 const labels = {
   ready: 'Ready',
   not_requested: 'Not requested',
@@ -31,8 +33,9 @@ export function finishSessionResult(result, blocked = false) {
 export function optionalComponent(result, detail) {
   return {
     state: result?.skipped ? 'not_requested' : result?.updatePending ? 'update_pending' : result?.deferred ? 'deferred' : result?.ready ? 'ready' : 'failed',
-    detail: result?.skipped ? 'Not selected; existing apps and services are unchanged.' : result?.reason ||
-      (result?.updatePending ? 'Current service is available; the running version was preserved until the next console session. ' : '') + detail,
+    detail: result?.skipped ? 'Not selected; existing apps and services are unchanged.' : safeLog(result?.diagnostic
+      ? result.diagnostic + ' ' + (result.reason || '') : result?.reason ||
+      (result?.updatePending ? 'Current service is available; the running version was preserved until the next console session. ' : '') + detail),
   };
 }
 
@@ -50,7 +53,7 @@ export function renderSessionResult(document, result) {
     const label = document.createElement('strong');
     label.textContent = component.name + ' — ' + labels[component.state];
     const detail = document.createElement('span');
-    detail.textContent = component.detail;
+    detail.textContent = safeLog(component.detail);
     row.appendChild(label);
     row.appendChild(detail);
     list.appendChild(row);

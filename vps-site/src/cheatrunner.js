@@ -1,5 +1,6 @@
 import { PS5IO, checkedPath, sleep } from './ps5-io.js';
 import { sha256 } from './transmission.js';
+import { diagnosticError } from './diagnostics.js';
 
 export const VERSION = '0.17.2-botty.1';
 const HASH = '161b9d3111a77f3c772d57940bd03fb3f90a9f931bc77386eb85f4c2088d9807';
@@ -71,9 +72,9 @@ export async function installAndStartCheatRunner(io, options = {}) {
 
   report('Verifying CheatRunner and its home-screen package…');
   const response = await fetchFile(BASE + 'manifest.json', { cache: 'no-store' });
-  if (!response.ok) throw Error('CheatRunner manifest unavailable.');
+  if (!response.ok) throw diagnosticError('PACKAGE_HTTP_ERROR', 'CheatRunner manifest unavailable (HTTP ' + response.status + ').');
   const raw = new Uint8Array(await response.arrayBuffer());
-  if (await digest(raw) !== HASH) throw Error('CheatRunner manifest verification failed.');
+  if (await digest(raw) !== HASH) throw diagnosticError('PACKAGE_VERIFICATION_FAILED', 'CheatRunner manifest verification failed.', 'Package integrity could not be verified. Do not bypass verification.');
   const manifest = JSON.parse(decoder.decode(raw));
   const file = manifest.files?.[0];
   if (manifest.schema !== 1 || manifest.app !== 'CheatRunner' || manifest.version !== VERSION ||
@@ -133,6 +134,7 @@ export async function installAndStartCheatRunner(io, options = {}) {
 }
 
 export function cheatRunnerStatus(result) {
+  if (result?.diagnostic) return result.diagnostic;
   if (!result?.ready) return result?.reason || 'CheatRunner is unavailable; Botty is ready.';
   let text = result.tileRegistered ? 'CheatRunner is online; its Media tile is registered. Home screen visibility is not confirmed.' : 'CheatRunner is online; its Media tile registration is not confirmed.';
   if (result.updatePending) text += ' The running version was preserved; update on the next console session.';

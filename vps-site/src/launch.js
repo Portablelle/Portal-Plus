@@ -9,6 +9,7 @@ import { installAndStart } from './rtorrent.js';
 import { installAndStartManager } from './botty-manager.js';
 import { createSessionResult, finishSessionResult, optionalComponent } from './session-result.js';
 import { launchStep, progressReporter } from './launch-progress.js';
+import { atStage, diagnosticError, optionalFailure, safeLog } from './diagnostics.js';
 
 export async function launchSession(options) {
   const emit = progressReporter(options.onProgress);
@@ -20,30 +21,30 @@ export async function launchSession(options) {
   try {
     if (services.ppr && !supportsPpr(options.firmware)) {
       step = 'ppr';
-      throw Error('A53 PPR supports PS5 firmware up to 11.40 only.');
+      throw Object.assign(diagnosticError('PPR_FIRMWARE_UNSUPPORTED', 'A53 PPR supports PS5 firmware up to 11.40 only.', 'Disable A53 PPR before starting a new session.'), { stage: 'Launch prerequisites' });
     }
     const report = options.report || (() => {});
     const send = options.send || sendPayload;
     const wait = options.wait || sleep;
     report('Running jailbreak. Keep this page open.');
-    const runtime = await launchStep(emit, 'jailbreak', () => options.jailbreak());
+    const runtime = await launchStep(emit, 'jailbreak', () => atStage('Jailbreak', () => options.jailbreak()));
     record('jailbreak', 'ready', 'Jailbreak runtime obtained. Component readiness is checked separately.');
     step = 'io';
-    const io = await launchStep(emit, 'io', () => options.io || new PS5IO(runtime));
+    const io = await launchStep(emit, 'io', () => atStage('Console I/O', () => options.io || new PS5IO(runtime)));
     record('io', 'ready', 'Console I/O adapter initialized. Service checks are reported separately.');
     step = 'native';
     // Publish the complete title before ShadowMountPlus scans the homebrew directory.
-    const native = await launchStep(emit, 'native', () => (options.native || installNative)(options.nativeIO || new NativeIO(runtime), { report, reuseNewer: true }), { enabled: services.botty });
+    const native = await launchStep(emit, 'native', () => atStage('Botty+ native installation', () => (options.native || installNative)(options.nativeIO || new NativeIO(runtime), { report, reuseNewer: true })), { enabled: services.botty });
     if (services.botty) record('native', 'ready', 'Installed app prepared or recognized and preserved. Home screen visibility is not confirmed.');
     step = 'kstuff';
-    await loadRequiredPayloads(runtime, { send, wait, report, ppr: services.ppr, onProgress: emit,
+    await atStage('Required payloads', () => loadRequiredPayloads(runtime, { send: (runtime, name) => atStage(name, () => send(runtime, name)), wait, report, ppr: services.ppr, onProgress: emit,
       beforePayload(name) { step = name === 'kstuff.elf' ? 'kstuff' : name === 'a53_ppr_install.elf' ? 'ppr' : 'shadowmount'; },
       confirmPpr: options.confirmPpr,
       confirmedPpr() { record('ppr', 'ready', 'Success notification confirmed by the user; no automatic startup check.'); },
       markSent() { record(step, 'unconfirmed', 'Payload sent. Startup is not confirmed; check the console notification.', { delivered: true }); },
-    });
+    }));
     step = 'ftp';
-    await launchStep(emit, 'ftp', async () => {
+    await launchStep(emit, 'ftp', () => atStage('FTP startup', async () => {
       report('Starting FTP…');
       if (!await io.listening(2121)) {
         await send(runtime, 'ftpsrv-ps5.elf');
@@ -52,15 +53,15 @@ export async function launchSession(options) {
           if (await io.listening(2121)) { ready = true; break; }
           await wait(250);
         }
-        if (!ready) throw Error('FTP did not start on port 2121.');
+        if (!ready) throw diagnosticError('FTP_NOT_LISTENING', 'FTP did not start on port 2121.', 'FTP readiness was not confirmed. Check the session log; no duplicate payload was sent. Do not launch again in this session.');
       }
       record('ftp', 'ready', 'Listener confirmed on port 2121.');
-    }, { enabled: services.ftp });
+    }), { enabled: services.ftp });
     if (!services.ftp) report('FTP startup skipped by launch options.');
     step = 'rtorrent';
     const rtorrent = await launchStep(emit, 'rtorrent', async () => {
       report('Preparing rTorrent…');
-      const result = await (options.rtorrent || installAndStart)(io, { report });
+      const result = await atStage('rTorrent installation / startup', () => (options.rtorrent || installAndStart)(io, { report }));
       record('rtorrent', 'ready', 'Listener confirmed on port 5001.');
       return result;
     }, { enabled: services.rtorrent || services.botty });
@@ -69,7 +70,7 @@ export async function launchSession(options) {
     step = 'manager';
     if (services.botty) {
       report('Preparing Botty…');
-      manager = await launchStep(emit, 'manager', () => (options.manager || installAndStartManager)(io, { report }));
+      manager = await launchStep(emit, 'manager', () => atStage('Botty+ manager installation / startup', () => (options.manager || installAndStartManager)(io, { report })));
       record('manager', manager?.updatePending ? 'update_pending' : 'ready', manager?.updatePending
         ? 'Current service health confirmed. Update applies next console session; active work is preserved.'
         : 'Service health confirmed on port 8088.');
@@ -81,24 +82,26 @@ export async function launchSession(options) {
     if (services.cheatrunner) try {
       cheatrunner = await launchStep(emit, 'cheatrunner', () => (options.cheatrunner || installAndStartCheatRunner)(options.cheatRunnerIO || new CheatRunnerIO(runtime), { report, wait }));
     } catch (error) {
-      cheatrunner = { ready: false, reason: 'CheatRunner setup: ' + (error.message || String(error)) };
+      cheatrunner = optionalFailure('CheatRunner', error);
     }
     Object.assign(summary.components.cheatrunner, optionalComponent(cheatrunner,
       cheatrunner.tileRegistered ? 'Service confirmed. App registration confirmed; home screen visibility is not confirmed.' : 'Service confirmed. App registration and home screen visibility are not confirmed.'));
     if (!services.cheatrunner) emit({ id: 'cheatrunner', state: 'skipped', detail: 'Not selected.' });
     report(cheatRunnerStatus(cheatrunner));
+    if (cheatrunner.diagnostic) report(safeLog('CheatRunner installation / startup: ' + cheatrunner.reason), { logOnly: true });
     step = 'codex';
     let codex = { ready: false, skipped: true };
     if (services.codex) try {
       codex = await launchStep(emit, 'codex', () => (options.codex || startCodex)(options.codexIO || new CodexIO(runtime), { report, wait }));
-    } catch (error) { codex = { ready: false, deferred: error.deferred === true, reason: 'Codex PS5: ' + (error.message || String(error)) }; }
+    } catch (error) { codex = optionalFailure('Codex PS5', error); }
     Object.assign(summary.components.codex, optionalComponent(codex, 'Listener confirmed on port 49322. App visibility and ChatGPT connection are not confirmed.'));
     if (services.codex) report(codexStatus(codex));
     else emit({ id: 'codex', state: 'skipped', detail: 'Not selected.' });
+    if (codex.diagnostic) report(safeLog('Codex PS5 installation / startup: ' + codex.reason), { logOnly: true });
     failed = false;
     return {native, rtorrent, manager, cheatrunner, codex, summary: finishSessionResult(summary)};
   } catch (error) {
-    record(step, error.deferred ? 'deferred' : 'failed', error.message || String(error));
+    record(step, error.deferred ? 'deferred' : 'failed', safeLog(error.logMessage || error.message || String(error)));
     error.sessionResult = finishSessionResult(summary, true);
     throw error;
   } finally {

@@ -1,5 +1,6 @@
 import { PS5IO, checkedPath } from './ps5-io.js';
 import { sha256 } from './transmission.js';
+import { diagnosticError } from './diagnostics.js';
 
 export const NATIVE_ROOT = '/data/homebrew/PPSA99071';
 const JOURNAL = '/data/botty/native/update.json';
@@ -37,7 +38,7 @@ export class NativeIO extends PS5IO {
   async assertNativeStopped() {
     // Process names do not identify the title reliably: fail closed for any eboot.
     if ((await this.processes()).some(p => /^(eboot(?:\.bin)?|botty.*)$/i.test(p.name)))
-      throw Error('Close Botty+ and other native apps before updating, then start a new session.');
+      throw diagnosticError('NATIVE_APP_RUNNING', 'Close Botty+ and other native apps before updating, then start a new session.', 'A native app is running. Close Botty+ and other native apps before an update in a new session.');
   }
   async syncDirectory(path) {
     const fd = await this.call('open', this.string(path), 0x20000 | 0x100, 0);
@@ -189,9 +190,9 @@ export async function installNative(io, options = {}) {
   const report = options.report || (() => {});
   report('Checking Botty+…');
   const response = await fetchFile('./apps/botty-native/manifest.json', { cache: 'no-store' });
-  if (!response.ok) throw Error('Botty+ manifest unavailable.');
+  if (!response.ok) throw diagnosticError('PACKAGE_HTTP_ERROR', 'Botty+ manifest unavailable (HTTP ' + response.status + ').');
   const bytes = new Uint8Array(await response.arrayBuffer());
-  if (await digest(bytes) !== HASH) throw Error('Botty+ manifest verification failed.');
+  if (await digest(bytes) !== HASH) throw diagnosticError('PACKAGE_VERIFICATION_FAILED', 'Botty+ manifest verification failed.', 'Package integrity could not be verified. Do not bypass verification.');
   const manifest = JSON.parse(decoder.decode(bytes));
   if (manifest.schema !== 1 || manifest.titleId !== 'PPSA99071' ||
       !/^\d{2}\.\d{3}\.\d{3}$/.test(manifest.version) ||
@@ -274,7 +275,7 @@ export async function installNative(io, options = {}) {
     } catch (error) {
       // Restore only if the live path is absent/empty; never delete uncertain content.
       try { await recover(io, journal, manifest, digest, report); }
-      catch (_) { throw Error('Botty+ update interrupted. Backup retained; restart to recover before opening the app.'); }
+      catch (_) { throw diagnosticError('NATIVE_RECOVERY_REQUIRED', 'Botty+ update interrupted. Backup retained; restart to recover before opening the app.', 'Native title publication or recovery is incomplete. Keep Botty+ closed. Restart your PS5 before a new session can recover the retained backup.'); }
       throw error;
     }
     report('Botty+ updated to ' + manifest.version + '. Previous version backed up.');

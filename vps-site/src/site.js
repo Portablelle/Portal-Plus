@@ -5,6 +5,7 @@ import { installWindowP } from "./utils/mem.js";
 
 import { renderSessionResult } from './session-result.js';
 import { renderPostLaunch } from './post-launch.js';
+import { atStage, diagnosticError, failureStatus, safeLog } from './diagnostics.js';
 import { bindLaunchOptions } from './launch-options.js';
 import { launchSession } from "./launch.js";
 import { bindLaunchProgress, progressReporter } from './launch-progress.js';
@@ -23,7 +24,7 @@ function writeLog(message, type = "log", replace = false) {
   if (type === "error") marker = "-";
   if (type === "info" || type === "success") marker = "+";
   const elapsed = launchStartedAt === null ? "" : `${Math.floor((performance.now() - launchStartedAt) / 1000)}s `;
-  line.textContent = `${elapsed}[${marker}] ${message}`;
+  line.textContent = `${elapsed}[${marker}] ${safeLog(message)}`;
   output.scrollTop = output.scrollHeight;
 }
 
@@ -66,23 +67,33 @@ async function run() {
   writeLog("Credits: Sonic_Iso, Jordy, ntfargo, ufm42, Dr. Yenyen, TheFlow, SlidyBat, Flatz, cow, nhk, bollarz, Sleirsgoevy, EchoStretch, EarthOnion", "info");
   writeLog(`Agent: ${navigator.userAgent}`, "info");
   writeLog(`Firmware: ${window.fw_str}`, "info");
-  const primitive = await getPrimitive();
-  writeLog(`WebKit base: 0x${getWebKitBase().toString(16)}`, "info");
+  const primitive = await atStage('WebKit exploit', getPrimitive);
+  const webKitBase = await atStage('WebKit exploit', getWebKitBase);
+  writeLog(`WebKit base: 0x${webKitBase.toString(16)}`, "info");
 
-  await import("./relapse_exploit.js");
-  return await main(primitive);
+  await atStage('Kernel exploit module loading', async () => {
+    try { await import("./relapse_exploit.js"); }
+    catch (error) {
+      throw Object.assign(diagnosticError('JAILBREAK_MODULE_UNAVAILABLE', error.message || String(error), 'The kernel exploit module could not be loaded. WebKit has already run, so console state is uncertain. Restart your PS5 before another launch.'), { cause: error });
+    }
+  });
+  return await atStage('Kernel exploit', () => main(primitive));
 }
 
 const button = document.getElementById("launch");
 const status = document.getElementById("status");
 const rejection = window.firmware.rejection();
+const firmwareDiagnostic = window.firmware.diagnostic();
 let started = false;
 const launchOptions = bindLaunchOptions(document, window);
 const progress = bindLaunchProgress(document);
 const reportProgress = progressReporter(event => progress.event(event));
-document.getElementById("firmware").textContent = rejection ? "PS5 browser required" : "PS5 / " + window.fw_str;
+document.getElementById("firmware").textContent = firmwareDiagnostic ? firmwareDiagnostic.label : "PS5 / " + window.fw_str;
 button.disabled = Boolean(rejection);
-if (rejection) status.textContent = "Open this page on your PS5 to launch.";
+if (rejection) {
+  status.textContent = rejection;
+  writeLog(`[${firmwareDiagnostic.code}] ${rejection}`, 'error');
+}
 else button.focus();
 button.addEventListener("click", async () => {
   if (started || rejection) return;
@@ -94,13 +105,16 @@ button.addEventListener("click", async () => {
   button.disabled = true;
   button.textContent = "LAUNCHING";
   button.setAttribute("aria-busy", "true");
-  const report = message => { status.textContent = message; writeLog(message, "info"); };
+  const report = (message, options = {}) => {
+    if (!options.logOnly) status.textContent = safeLog(message);
+    writeLog(message, options.logOnly ? 'error' : 'info');
+  };
   try {
     report("Starting session…");
     // Give the browser a paint opportunity before the synchronous WebKit work.
     await new Promise(resolve => requestAnimationFrame(() => setTimeout(resolve, 0)));
     const result = await launchSession({
-      jailbreak: async () => { await window.offsetsReady; return await run(); },
+      jailbreak: async () => { await atStage('Firmware offsets loading', () => window.offsetsReady); return await run(); },
       report,
       services,
       onProgress: reportProgress,
@@ -125,16 +139,19 @@ button.addEventListener("click", async () => {
     status.textContent = result.summary.outcome === 'complete'
       ? 'Session complete. See next steps and component confirmations below.'
       : 'Jailbreak succeeded. See next steps and warnings below; confirmed services remain available.';
+    for (const component of [result.cheatrunner, result.codex]) {
+      if (component?.diagnostic) status.textContent += ' ' + safeLog(component.diagnostic);
+    }
     document.getElementById('cheatrunner').hidden = !result.cheatrunner?.ready;
     document.body.dataset.state = "ready";
   } catch (error) {
     button.textContent = "STOPPED";
-    status.textContent = "Setup stopped. Restart your PS5 before trying again.";
+    status.textContent = safeLog(failureStatus(error));
     if (error.sessionResult) {
       renderSessionResult(document, error.sessionResult);
       renderPostLaunch(document, error.sessionResult);
     }
-    writeLog(error.message || String(error), "error");
+    writeLog(`${error.stage || 'Session setup'} [${error.code || 'STEP_FAILED'}]: ${error.logMessage || error.message || String(error)}`, "error");
     document.body.dataset.state = "error";
   } finally {
     reportProgress({ type: 'end', failed: document.body.dataset.state === 'error' });
