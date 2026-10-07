@@ -22,9 +22,12 @@ export function bindLaunchOptions(document, browser) {
     storageStatus.textContent = 'Choices apply to this launch. Browser storage is unavailable or saved choices could not be read.';
   }
   const ppr = inputs.find(input => input.name === 'ppr');
+  const rtorrent = inputs.find(input => input.name === 'rtorrent');
+  const botty = inputs.find(input => input.name === 'botty');
   ppr.disabled = !supportsPpr(browser.fw_str);
   const read = () => Object.fromEntries(inputs.map(input => [input.name, input.checked]));
   const summarize = () => {
+    rtorrent.disabled = botty.checked;
     const count = inputs.filter(input => input.checked && !['ppr', 'codex'].includes(input.name)).length;
     document.getElementById('launch-options-summary').textContent = count + ' of 4 services enabled' + (ppr.checked ? ' + A53 PPR' : '') + (read().codex ? ' + Codex PS5' : '');
   };

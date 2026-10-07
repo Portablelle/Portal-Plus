@@ -18,6 +18,26 @@ test('preferences default on and only explicit false disables startup', () => {
   for (const value of [undefined, null, {}, [], 'bad', { ftp: 'false', rtorrent: 0 }])
     assert.deepEqual(normalizeLaunchServices(value), { ftp: true, rtorrent: true, cheatrunner: true, ppr: false, codex: false, botty: true });
 });
+test('Botty disables standalone rTorrent and preserves its saved choice', () => {
+  for (const standalone of [false, true]) {
+    const f = fixture(JSON.stringify({ botty: true, rtorrent: standalone }));
+    const rtorrent = f.inputs[1];
+    const botty = f.inputs[5];
+    assert.equal(rtorrent.disabled, true);
+    assert.equal(rtorrent.checked, standalone);
+    botty.checked = false; botty.change();
+    assert.equal(rtorrent.disabled, false);
+    assert.equal(rtorrent.checked, standalone);
+    rtorrent.checked = !standalone; rtorrent.change();
+    botty.checked = true; botty.change();
+    assert.equal(rtorrent.disabled, true);
+    const restored = fixture(f.saved());
+    assert.equal(restored.inputs[1].disabled, true);
+    restored.inputs[5].checked = false; restored.inputs[5].change();
+    assert.equal(restored.inputs[1].checked, !standalone);
+  }
+  assert.equal(fixture('{"botty":false}').inputs[1].disabled, false);
+});
 test('saved choices restore, changes persist, launch locks a snapshot', () => {
   const f = fixture('{"ftp":false,"rtorrent":true,"cheatrunner":false}');
   assert.deepEqual(f.inputs.map(input => input.checked), [false, true, false, false, false, true]);
