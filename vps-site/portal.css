@@ -87,9 +87,8 @@ body[data-state="launching"]::after { animation: none !important; transition: no
 #launch-options summary::before { content: '+'; color: #8fb4ec; }
 #launch-options[open] summary::before { content: '−'; }
 #launch-options-summary { margin-left: auto; color: #9badcc; font-size: 12px; }
-#launch-options summary:focus { outline: none; }
-#launch-options summary:focus-visible { outline: 2px solid #d4eeff; outline-offset: 4px; }
-.service-options input:focus { outline: 2px solid #d4eeff; outline-offset: 4px; }
+#launch-options summary:focus, .service-options input:focus { outline: 2px solid #d4eeff; outline-offset: 4px; }
+#launch-options summary:focus:not(:focus-visible) { outline: none; }
 #launch-services { border: 0; border-top: 1px solid #243654; margin: 0; padding: 16px 20px; min-width: 0; }
 #launch-services legend { padding: 0 8px; color: #9badcc; font-size: 12px; }
 .service-options { display: flex; gap: 12px; }
