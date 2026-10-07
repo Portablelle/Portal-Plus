@@ -57,9 +57,12 @@ class CompositionTests(unittest.TestCase):
         self.assertEqual((self.portal / 'manifest.json').read_bytes(), before)
         validator.verify(self.portal)
 
-    def test_unlisted_private_file_is_not_imported(self):
+    def test_unlisted_private_file_is_rejected_before_composition(self):
         (self.botty / 'packages/botty/private.txt').write_text('private')
-        compose.compose(self.portal, self.botty)
+        before = (self.portal / 'manifest.json').read_bytes()
+        with self.assertRaisesRegex(ValueError, 'Unlisted package files'):
+            compose.compose(self.portal, self.botty)
+        self.assertEqual((self.portal / 'manifest.json').read_bytes(), before)
         self.assertFalse((self.portal / 'apps/botty/private.txt').exists())
 
     def test_stale_source_notice_and_path_traversal_rejected(self):
