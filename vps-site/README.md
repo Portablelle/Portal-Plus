@@ -15,11 +15,15 @@ app before ShadowMountPlus scans homebrew and starts its manager, compression
 worker and rTorrent dependency. Disabling Botty+ skips all its installation and
 startup work. Other selected apps continue to work independently. Disabling an
 option leaves existing files and running services untouched.
-After setup, read the session-result panel and status; the button keeps its
-**LAUNCH** label. Each component has an explicit readiness, failure, deferral or
-next-startup-update label. Optional failures do not hide confirmed services, and
-an interrupted setup retains its earlier results. Kstuff and ShadowMountPlus
-show **Sent — startup unconfirmed** because delivery is not a startup check.
+After setup, read the session-result panel and status. The button returns to
+**LAUNCH** when setup finishes without a blocking failure, or shows **STOPPED**
+when setup stops. Each component has an explicit label: **Ready**, **Not
+requested**, **Failed**, **Deferred**, **Update on next startup** or **Sent —
+startup unconfirmed**. Optional failures do not hide confirmed services, and
+an interrupted setup retains its earlier results. Successfully delivered Kstuff
+and ShadowMountPlus payloads show **Sent — startup unconfirmed** because delivery
+is not a startup check. A failed send shows **Failed**; a payload not reached
+before setup stops remains **Deferred** with **Not executed yet**.
 App preparation or registration does not confirm home-screen visibility. Once
 you have checked the relevant console notifications and component results, press
 PS and open an available installed app. On a blocking setup failure, restart the

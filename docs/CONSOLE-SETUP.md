@@ -46,7 +46,7 @@ the console's Internet test may fail even when the portal is reachable.
    redirect if the browser offers that option. The destination portal needs a
    trusted certificate. If the browser refuses the hop, this route cannot be
    used on that setup; see the troubleshooting table below.
-3. Select **LAUNCH** once and leave the page open until the session-result panel appears. Read the status and each component's result; the button keeps its **LAUNCH** label. Payload delivery does not confirm startup, and app registration does not confirm home-screen visibility. Check the console notifications before opening an available app. If setup stops, earlier results remain visible; restart the PS5 before trying again.
+3. Select **LAUNCH** once and leave the page open until the session-result panel appears. Read the status and each component's result. When setup finishes without a blocking failure, the button returns to **LAUNCH**. The optional A53 PPR confirmation temporarily shows **CONTINUE**. Payload delivery does not confirm startup, and app registration does not confirm home-screen visibility. Check the console notifications before opening an available app. If setup stops, the button shows **STOPPED** and earlier results remain visible; restart the PS5 before trying again.
 4. Press **PS**, return to the home screen and open **Botty+**. Allow time for
    the icon to appear on first installation. Repeat the Guide → **LAUNCH**
    sequence after each cold boot, before opening the native app.

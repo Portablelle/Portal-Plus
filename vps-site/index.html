@@ -15,7 +15,6 @@
       <p class="eyebrow">YOUR CONSOLE. UNLOCKED.</p>
       <div class="launch-frame"><button id="launch" type="button" aria-describedby="status">LAUNCH</button></div>
       <p id="status" role="status" aria-live="polite">Jailbreak and your selected apps. One launch.</p>
-      <a id="cheatrunner" href="http://127.0.0.1:9999/" hidden>Open CheatRunner</a>
       <p class="hint">Keep this page open. Installed apps are reused.</p>
     </section>
     <section id="launch-progress" aria-labelledby="launch-progress-title" hidden>
@@ -23,22 +22,33 @@
       <p id="launch-progress-status" role="status" aria-live="polite" aria-atomic="true"></p>
       <ol id="launch-steps"></ol>
     </section>
+    <section id="post-launch" aria-labelledby="post-launch-title" hidden>
+      <h2 id="post-launch-title">What to do next</h2>
+      <ul id="post-launch-instructions"></ul>
+      <nav class="post-launch-actions" aria-label="Post-launch actions">
+        <a id="cheatrunner" href="http://127.0.0.1:9999/" hidden>Open CheatRunner</a>
+        <a href="#console">Read session log</a>
+      </nav>
+    </section>
     <section id="session-result" aria-label="Session result" aria-live="polite" hidden></section>
     <details id="launch-options">
-      <summary>Launch options <span id="launch-options-summary">4 of 4 services enabled</span></summary>
+      <summary>Launch options <span id="launch-options-summary" aria-live="polite" aria-atomic="true">Botty+ (includes rTorrent), FTP, CheatRunner</span></summary>
       <fieldset id="launch-services">
         <legend>Start with LAUNCH</legend>
         <div class="service-options">
           <label><input type="checkbox" name="botty" checked><span><strong>Botty+</strong><small>Download manager and Library · includes rTorrent</small></span></label>
           <label><input type="checkbox" name="ftp" checked><span><strong>FTP</strong><small>File transfers</small></span></label>
-          <label><input type="checkbox" name="rtorrent" checked><span><strong>rTorrent</strong><small>Standalone · included with Botty+</small></span></label>
+          <label id="rtorrent-option"><input type="checkbox" name="rtorrent" checked><span><strong>rTorrent</strong><small>Start independently of Botty+</small></span></label>
+          <div id="rtorrent-included" class="included-service" hidden><span><strong>rTorrent included</strong><small>Started with Botty+ · no separate selection needed</small></span></div>
           <label><input type="checkbox" name="cheatrunner" checked><span><strong>CheatRunner</strong><small>Game cheats</small></span></label>
         </div>
         <div class="service-options optional-patch">
           <label><input type="checkbox" name="codex"><span><strong>Codex PS5 (prototype)</strong><small>Install, auto-update and start · local voice dictation</small></span></label>
-          <label><input type="checkbox" name="ppr"><span><strong>A53 PPR patch</strong><small>Optional game compatibility patch · PS5 firmware ≤ 11.40 only</small></span></label>
+          <label><input type="checkbox" name="ppr" aria-describedby="ppr-availability ppr-warning"><span><strong>A53 PPR patch</strong><small>Optional game compatibility patch · PS5 firmware ≤ 11.40 only</small></span></label>
         </div>
-        <p>For A53 PPR, close games first and wait for all game mounts and unmounts to finish. After sending, confirm its success notification before continuing.</p>
+        <p>Unchecked options skip installation and startup for this launch. Installed apps and services already running are left intact.</p>
+        <p id="ppr-availability" hidden></p>
+        <p id="ppr-warning">For A53 PPR, close games first and wait for all game mounts and unmounts to finish. After sending, confirm its success notification before continuing.</p>
         <p id="launch-options-storage" role="status" hidden></p>
       </fieldset>
     </details>

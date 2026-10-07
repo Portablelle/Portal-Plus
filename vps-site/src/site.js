@@ -4,6 +4,7 @@ import { installWindowP } from "./utils/mem.js";
 
 
 import { renderSessionResult } from './session-result.js';
+import { renderPostLaunch } from './post-launch.js';
 import { bindLaunchOptions } from './launch-options.js';
 import { launchSession } from "./launch.js";
 import { bindLaunchProgress, progressReporter } from './launch-progress.js';
@@ -120,15 +121,19 @@ button.addEventListener("click", async () => {
     });
     button.textContent = "LAUNCH";
     renderSessionResult(document, result.summary);
+    renderPostLaunch(document, result.summary);
     status.textContent = result.summary.outcome === 'complete'
-      ? 'Session complete. See component confirmations below.'
-      : 'Jailbreak succeeded. Review warnings and confirmation limits below; confirmed services remain available.';
+      ? 'Session complete. See next steps and component confirmations below.'
+      : 'Jailbreak succeeded. See next steps and warnings below; confirmed services remain available.';
     document.getElementById('cheatrunner').hidden = !result.cheatrunner?.ready;
     document.body.dataset.state = "ready";
   } catch (error) {
     button.textContent = "STOPPED";
     status.textContent = "Setup stopped. Restart your PS5 before trying again.";
-    if (error.sessionResult) renderSessionResult(document, error.sessionResult);
+    if (error.sessionResult) {
+      renderSessionResult(document, error.sessionResult);
+      renderPostLaunch(document, error.sessionResult);
+    }
     writeLog(error.message || String(error), "error");
     document.body.dataset.state = "error";
   } finally {
