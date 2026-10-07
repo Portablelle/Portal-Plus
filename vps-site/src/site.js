@@ -3,7 +3,7 @@ import { installWindowP } from "./utils/mem.js";
 
 
 
-import { cheatRunnerStatus } from './cheatrunner.js';
+import { renderSessionResult } from './session-result.js';
 import { bindLaunchOptions } from './launch-options.js';
 import { launchSession } from "./launch.js";
 
@@ -112,18 +112,17 @@ button.addEventListener("click", async () => {
         }, { once: true });
       }),
     });
-    button.textContent = "READY";
-    status.textContent = result.native?.skipped
-      ? 'Jailbreak ready. Your selected services are available.'
-      : result.manager?.updatePending
-      ? "Press PS and open Botty+. Service update applies next console session; current work continues."
-      : "Press PS and open Botty+. Allow time for the home screen to refresh.";
-    status.textContent += ' ' + cheatRunnerStatus(result.cheatrunner);
+    button.textContent = "LAUNCH";
+    renderSessionResult(document, result.summary);
+    status.textContent = result.summary.outcome === 'complete'
+      ? 'Session complete. See component confirmations below.'
+      : 'Jailbreak succeeded. Review warnings and confirmation limits below; confirmed services remain available.';
     document.getElementById('cheatrunner').hidden = !result.cheatrunner?.ready;
     document.body.dataset.state = "ready";
   } catch (error) {
     button.textContent = "STOPPED";
     status.textContent = "Setup stopped. Restart your PS5 before trying again.";
+    if (error.sessionResult) renderSessionResult(document, error.sessionResult);
     writeLog(error.message || String(error), "error");
     document.body.dataset.state = "error";
   } finally {
