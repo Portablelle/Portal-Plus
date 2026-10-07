@@ -7,6 +7,7 @@ import { renderSessionResult } from './session-result.js';
 import { renderPostLaunch } from './post-launch.js';
 import { bindLaunchOptions } from './launch-options.js';
 import { launchSession } from "./launch.js";
+import { bindLaunchProgress, progressReporter } from './launch-progress.js';
 
 
 const output = document.getElementById("console");
@@ -77,6 +78,8 @@ const status = document.getElementById("status");
 const rejection = window.firmware.rejection();
 let started = false;
 const launchOptions = bindLaunchOptions(document, window);
+const progress = bindLaunchProgress(document);
+const reportProgress = progressReporter(event => progress.event(event));
 document.getElementById("firmware").textContent = rejection ? "PS5 browser required" : "PS5 / " + window.fw_str;
 button.disabled = Boolean(rejection);
 if (rejection) status.textContent = "Open this page on your PS5 to launch.";
@@ -86,6 +89,7 @@ button.addEventListener("click", async () => {
   const services = launchOptions.lock();
   started = true;
   launchStartedAt = performance.now();
+  try { progress.start(services); } catch {}
   document.body.dataset.state = "launching";
   button.disabled = true;
   button.textContent = "LAUNCHING";
@@ -99,12 +103,14 @@ button.addEventListener("click", async () => {
       jailbreak: async () => { await window.offsetsReady; return await run(); },
       report,
       services,
+      onProgress: reportProgress,
       firmware: window.fw_str,
       confirmPpr: () => new Promise(resolve => {
         report('Wait for the A53 PPR success notification, then select CONTINUE. On failure, restart your PS5.');
         button.textContent = 'CONTINUE';
         button.disabled = false;
         button.setAttribute('aria-busy', 'false');
+        button.focus();
         button.addEventListener('click', () => {
           button.disabled = true;
           button.textContent = 'LAUNCHING';
@@ -131,6 +137,7 @@ button.addEventListener("click", async () => {
     writeLog(error.message || String(error), "error");
     document.body.dataset.state = "error";
   } finally {
+    reportProgress({ type: 'end', failed: document.body.dataset.state === 'error' });
     button.setAttribute("aria-busy", "false");
   }
 });

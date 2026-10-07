@@ -17,6 +17,11 @@
       <p id="status" role="status" aria-live="polite">Jailbreak and your selected apps. One launch.</p>
       <p class="hint">Keep this page open. Installed apps are reused.</p>
     </section>
+    <section id="launch-progress" aria-labelledby="launch-progress-title" hidden>
+      <div class="progress-heading"><h2 id="launch-progress-title">Launch progress</h2><span id="launch-elapsed" aria-live="off">0s elapsed</span></div>
+      <p id="launch-progress-status" role="status" aria-live="polite" aria-atomic="true"></p>
+      <ol id="launch-steps"></ol>
+    </section>
     <section id="post-launch" aria-labelledby="post-launch-title" hidden>
       <h2 id="post-launch-title">What to do next</h2>
       <ul id="post-launch-instructions"></ul>
