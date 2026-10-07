@@ -5,7 +5,8 @@ import { bindLaunchOptions, normalizeLaunchServices, supportsPpr } from '../vps-
 function fixture(saved, unavailable = false, firmware = '11.20') {
   const inputs = ['ftp', 'rtorrent', 'cheatrunner', 'ppr', 'codex', 'botty'].map(name => ({ name, addEventListener(_, handler) { this.change = handler; } }));
   const elements = { 'launch-services': { querySelector: selector => inputs.find(input => selector.includes('"' + input.name + '"')) },
-    'launch-options-storage': {}, 'launch-options-summary': {}, 'launch-options': { open: true } };
+    'launch-options-storage': {}, 'launch-options-summary': {}, 'launch-options': { open: true },
+    'rtorrent-option': {}, 'rtorrent-included': {}, 'ppr-availability': {} };
   const browser = { fw_str: firmware, get localStorage() {
     if (unavailable) throw Error('Storage blocked');
     return { getItem: () => saved, setItem: (_, value) => { saved = value; } };
@@ -43,12 +44,51 @@ test('saved choices restore, changes persist, launch locks a snapshot', () => {
   assert.deepEqual(f.inputs.map(input => input.checked), [false, true, false, false, false, true]);
   f.inputs[1].checked = false; f.inputs[1].change();
   assert.deepEqual(JSON.parse(f.saved()), { ftp: false, rtorrent: false, cheatrunner: false, ppr: false, codex: false, botty: true });
-  assert.equal(f.elements['launch-options-summary'].textContent, '1 of 4 services enabled');
+  assert.equal(f.elements['launch-options-summary'].textContent, 'Botty+ (includes rTorrent)');
   const selected = f.control.lock();
   assert.equal(f.elements['launch-services'].disabled, true);
   assert.equal(f.elements['launch-options'].open, false);
   f.inputs[0].checked = true;
   assert.equal(selected.ftp, false);
+  assert.equal(selected.rtorrent, true);
+});
+
+test('Botty and standalone rTorrent combinations match the effective launch without double counting', () => {
+  for (const botty of [false, true]) for (const rtorrent of [false, true]) {
+    const f = fixture(JSON.stringify({ ftp: false, cheatrunner: false, botty, rtorrent }));
+    assert.equal(f.elements['rtorrent-option'].hidden, botty);
+    assert.equal(f.elements['rtorrent-included'].hidden, !botty);
+    assert.equal(f.elements['launch-options-summary'].textContent,
+      botty ? 'Botty+ (includes rTorrent)' : rtorrent ? 'rTorrent' : 'Jailbreak only');
+    assert.equal(f.control.lock().rtorrent, botty || rtorrent);
+  }
+});
+
+test('Botty toggles preserve the independent preference even without storage', () => {
+  const f = fixture(null, true);
+  const botty = f.inputs[5];
+  const rtorrent = f.inputs[1];
+  botty.checked = false; botty.change();
+  rtorrent.checked = false; rtorrent.change();
+  botty.checked = true; botty.change();
+  assert.equal(f.elements['rtorrent-included'].hidden, false);
+  botty.checked = false; botty.change();
+  assert.equal(rtorrent.disabled, false);
+  assert.equal(rtorrent.checked, false);
+  assert.equal(f.control.lock().rtorrent, false);
+});
+
+test('incompatible PPR stays out of the launch but retains its saved opt-in', () => {
+  const f = fixture('{"ppr":true}', false, '11.60');
+  assert.equal(f.elements['ppr-availability'].hidden, false);
+  assert.match(f.elements['ppr-availability'].textContent, /up to 11\.40 only/);
+  f.inputs[0].checked = false; f.inputs[0].change();
+  assert.equal(JSON.parse(f.saved()).ppr, true);
+  assert.doesNotMatch(f.elements['launch-options-summary'].textContent, /A53 PPR/);
+  assert.equal(f.control.lock().ppr, false);
+  const compatible = fixture(f.saved(), false, '11.40');
+  assert.equal(compatible.elements['ppr-availability'].hidden, true);
+  assert.equal(compatible.control.lock().ppr, true);
 });
 for (const unavailable of [false, true]) test('invalid or unavailable storage still allows selection: ' + unavailable, () => {
   const f = fixture('{broken', unavailable);
