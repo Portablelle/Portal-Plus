@@ -102,6 +102,24 @@ test('jailbreak failure is blocking and does not claim component readiness', asy
   });
 });
 
+test('I/O initialization failure preserves the jailbreak and does not blame a disabled app', async () => {
+  await assert.rejects(launchSession(fixture({ services: { botty: false }, io: undefined })), error => {
+    assert.equal(error.sessionResult.outcome, 'blocked');
+    assert.equal(error.sessionResult.components.jailbreak.state, 'ready');
+    assert.equal(error.sessionResult.components.io.state, 'failed');
+    assert.equal(error.sessionResult.components.native.state, 'not_requested');
+    assert.equal(error.sessionResult.components.kstuff.detail, 'Not executed yet.');
+    return true;
+  });
+});
+
+test('recognized newer native app does not claim package file verification', async () => {
+  const { summary } = await launchSession(fixture({ native: async () => ({ version: '99.000.000', updated: false }) }));
+  assert.equal(summary.components.native.state, 'ready');
+  assert.match(summary.components.native.detail, /recognized and preserved/);
+  assert.doesNotMatch(summary.components.native.detail, /files verified/i);
+});
+
 test('complete classification requires every requested component to be ready', () => {
   const result = createSessionResult({});
   for (const component of Object.values(result.components)) if (component.state !== 'not_requested') component.state = 'ready';
@@ -115,6 +133,7 @@ test('render uses explicit labels and text nodes for every state, including erro
   const states = ['ready', 'not_requested', 'failed', 'deferred', 'update_pending', 'unconfirmed'];
   renderSessionResult(document, { outcome: 'blocked', components: Object.fromEntries(states.map(state => [state, { name: state, state, detail: '<error>' }])) });
   assert.equal(container.hidden, false);
+  assert.deepEqual(container.children[1].children.map(row => row.dataset.state), states);
   assert.match(container.children[0].textContent, /partial results/);
   assert.deepEqual(container.children[1].children.map(row => row.children[0].textContent), [
     'ready — Ready', 'not_requested — Not requested', 'failed — Failed', 'deferred — Deferred', 'update_pending — Update on next startup',

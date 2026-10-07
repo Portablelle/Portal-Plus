@@ -25,13 +25,15 @@ export async function launchSession(options) {
     report('Running jailbreak. Keep this page open.');
     const runtime = await options.jailbreak();
     record('jailbreak', 'ready', 'Jailbreak runtime obtained. Component readiness is checked separately.');
+    step = 'io';
     const io = options.io || new PS5IO(runtime);
+    record('io', 'ready', 'Console I/O adapter initialized. Service checks are reported separately.');
     step = 'native';
     // Publish the complete title before ShadowMountPlus scans the homebrew directory.
     const native = services.botty
       ? await (options.native || installNative)(options.nativeIO || new NativeIO(runtime), { report, reuseNewer: true })
       : { skipped: true };
-    if (services.botty) record('native', 'ready', 'App files verified. Home screen visibility is not confirmed.');
+    if (services.botty) record('native', 'ready', 'Installed app prepared or recognized and preserved. Home screen visibility is not confirmed.');
     step = 'kstuff';
     await loadRequiredPayloads(runtime, { send, wait, report, ppr: services.ppr,
       beforePayload(name) { step = name === 'kstuff.elf' ? 'kstuff' : name === 'a53_ppr_install.elf' ? 'ppr' : 'shadowmount'; },
