@@ -103,4 +103,19 @@ body[data-state="launching"]::after { animation: none !important; transition: no
 .service-options small, #launch-services p { color: #9badcc; font-size: 12px; }
 #launch-services p { margin: 12px 0 0; }
 #launch-services:disabled { opacity: .65; }
+#launch-progress { margin: 0 0 24px; padding: 16px 20px; border: 1px solid #304568; border-radius: 8px; background: #0a1222; }
+.progress-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 16px; }
+#launch-progress h2 { margin: 0; font-size: 16px; }
+#launch-elapsed { color: #c1d0e9; font: 14px monospace; font-variant-numeric: tabular-nums; }
+#launch-progress-status { margin: 8px 0 12px; color: #c1d0e9; font-size: 14px; }
+#launch-steps { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; padding: 0; margin: 0; list-style-position: inside; }
+#launch-steps li { padding: 8px 12px; border: 1px solid #304568; border-radius: 4px; color: #c1d0e9; font-size: 14px; }
+#launch-steps strong { display: block; color: #f2f6ff; font-size: 12px; }
+#launch-steps small { display: block; color: #c1d0e9; font-size: 12px; }
+#launch-steps li[data-state="active"], #launch-steps li[data-state="waiting"] { border-color: #a3cdff; background: #182d4d; }
+#launch-steps li[data-state="failed"] { border-color: #ec91a6; }
+#launch-steps li[data-state="completed"] strong { color: #a8f3e2; }
+#launch-steps li[data-state="skipped"] strong { color: #c1d0e9; }
+@media (max-width: 900px) { #launch-steps { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+@media (max-width: 650px) { #launch-steps { grid-template-columns: 1fr; } #launch-progress { padding: 14px; } }
 @media (max-width: 650px) { .service-options { flex-direction: column; } #launch-options summary { padding: 14px; } #launch-options-summary { font-size: 11px; } }

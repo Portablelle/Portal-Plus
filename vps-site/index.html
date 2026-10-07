@@ -18,6 +18,11 @@
       <a id="cheatrunner" href="http://127.0.0.1:9999/" hidden>Open CheatRunner</a>
       <p class="hint">Keep this page open. Installed apps are reused.</p>
     </section>
+    <section id="launch-progress" aria-labelledby="launch-progress-title" hidden>
+      <div class="progress-heading"><h2 id="launch-progress-title">Launch progress</h2><span id="launch-elapsed" aria-live="off">0s elapsed</span></div>
+      <p id="launch-progress-status" role="status" aria-live="polite" aria-atomic="true"></p>
+      <ol id="launch-steps"></ol>
+    </section>
     <details id="launch-options">
       <summary>Launch options <span id="launch-options-summary">4 of 4 services enabled</span></summary>
       <fieldset id="launch-services">
