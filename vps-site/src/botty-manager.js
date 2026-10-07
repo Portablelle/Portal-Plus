@@ -1,5 +1,6 @@
 import { sha256 } from './transmission.js';
 import { sleep } from './ps5-io.js';
+import { diagnosticError, safeLog } from './diagnostics.js';
 export const MANAGER_ROOT='/data/botty/manager';
 const VERSION='1.5.1';
 const APP=MANAGER_ROOT+'/'+VERSION;
@@ -33,9 +34,9 @@ export async function installAndStartManager(io,options={}) {
   if(running?.version===VERSION&&await io.listening(5910)){await verifyWorker(io);return running;}
   report('Verifying the Botty homebrew package…');
   const response=await fetchFile(BASE+'manifest.json',{cache:'no-store'});
-  if(!response.ok)throw Error('Botty package manifest unavailable.');
+  if(!response.ok)throw diagnosticError('PACKAGE_HTTP_ERROR', 'Botty package manifest unavailable (HTTP '+response.status+').');
   const bytes=new Uint8Array(await response.arrayBuffer());
-  if(await digest(bytes)!==HASH)throw Error('Botty manifest verification failed.');
+  if(await digest(bytes)!==HASH)throw diagnosticError('PACKAGE_VERIFICATION_FAILED', 'Botty manifest verification failed.', 'Package integrity could not be verified. Do not bypass verification.');
   const manifest=JSON.parse(new TextDecoder().decode(bytes));
   const allowed=['botty-manager.elf','icon0.png','ui/index.html','ui/app.js','ui/style.css','cacert.pem','game-compressor.elf'];
   if(manifest.schema!==1||manifest.id!==VERSION||manifest.files.length!==allowed.length)throw Error('Unexpected Botty package.');
@@ -97,7 +98,9 @@ export async function installAndStartManager(io,options={}) {
   if(!result) {
     const log=await io.readFile(MANAGER_ROOT+'/startup.log',65536);
     const detail=log?new TextDecoder().decode(log).trim().slice(-1500):'No startup log: the executable may have failed before initialization.';
-    throw Error('Botty did not start. '+detail);
+    throw Object.assign(diagnosticError('SERVICE_NOT_READY', safeLog('Botty did not start. '+detail), 'Botty+ manager readiness was not confirmed. Check the session log; no duplicate payload was sent. Do not launch again in this session.'), {
+      logMessage: log ? 'Botty did not start on port 8088 within 20 seconds. Native details remain in the private startup.log; its contents are not displayed because they may contain credentials.' : 'Botty did not start on port 8088 within 20 seconds. No private startup log was available; the cause is unconfirmed.',
+    });
   }
   if(result.version!==VERSION)throw Error('The previous Botty service is still running. Start a new session to finish the update.');
   await io.writeFile(MANAGER_ROOT+'/installed.json',encoder.encode(JSON.stringify({app:'Botty',version:VERSION})+'\n'));

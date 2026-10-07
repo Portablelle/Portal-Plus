@@ -2,6 +2,7 @@ import { PS5IO, sleep } from './ps5-io.js';
 import { sha256 } from './transmission.js';
 import { installCodex, NATIVE, SERVICE, UPDATE, nativeIdentity } from './codex-install.js';
 import { PAYLOAD } from './codex-payload.js';
+import { diagnosticError } from './diagnostics.js';
 const PATH = '/data/codex-ps5/payloads/assistant-service/assistant-service.elf';
 
 export class CodexIO extends PS5IO {
@@ -65,7 +66,7 @@ export class CodexIO extends PS5IO {
   }
   async assertNativeStopped() {
     if ((await this.processes()).some(p => /^(eboot(?:\.bin)?|codex.*)$/i.test(p.name)))
-      throw Error('Close Codex PS5 and other native apps before updating, then relaunch the portal.');
+      throw diagnosticError('NATIVE_APP_RUNNING', 'Close Codex PS5 and other native apps before updating, then relaunch the portal.', 'A native app is running. Close Codex PS5 and other native apps before an update in a new session.');
   }
   async syncDirectory(path) {
     const fd = await this.call('open', this.string(path), 0x20000 | 0x100, 0);
@@ -225,7 +226,7 @@ export async function startCodex(io, options = {}) {
     let status;
     try { const r = await io.http(49323, '/status'); if (r.status === 200) status = JSON.parse(r.body); } catch (_) {}
     if (status?.service === 'codex-ps5' && status.build === installed.serviceBuild) return {ready: true, reused: true, version: installed.version};
-    if (!status && await io.listening(49323)) return {ready: true, updatePending: true, reason: 'Codex engine is busy. Close Codex PS5, wait for its conversation to end, then run LAUNCH again.'};
+    if (!status && await io.listening(49323)) return {ready: true, updatePending: true, code: 'ENGINE_STATE_UNCONFIRMED', reason: 'Codex ports are listening, but the engine state could not be verified. The existing engine was preserved; update is pending. Check the session log. Do not launch again in this session.'};
     if (!status || status.service !== 'codex-ps5' || status.idle !== true || !Number.isInteger(status.pid))
       return {ready: true, updatePending: true, reason: 'Codex files updated. Fully restart the PS5 and run LAUNCH with Codex checked to activate the new engine.'};
     await io.assertNativeStopped();
@@ -251,6 +252,7 @@ export async function startCodex(io, options = {}) {
   throw Error('The service did not become ready. No second payload was sent.');
 }
 export function codexStatus(result) {
+  if (result?.diagnostic) return result.diagnostic;
   if (result?.updatePending) return result.reason;
   return result?.ready ? 'Codex ' + (result.version || 'PS5') + ' is ready. Open it in the game library; L1 connects ChatGPT, Triangle dictates.' : result?.reason || 'Codex PS5 is unavailable.';
 }
