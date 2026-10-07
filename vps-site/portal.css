@@ -92,7 +92,10 @@ body[data-state="launching"]::after { animation: none !important; transition: no
 #launch-services legend { padding: 0 8px; color: #9badcc; font-size: 12px; }
 .service-options { display: flex; gap: 12px; }
 .optional-patch { margin-top: 12px; }
-.service-options label { display: flex; align-items: center; gap: 14px; flex: 1; padding: 16px; border: 1px solid #304568; border-radius: 6px; cursor: pointer; background: #111e34; }
+.service-options label, .included-service { display: flex; align-items: center; gap: 14px; flex: 1; padding: 16px; border: 1px solid #304568; border-radius: 6px; background: #111e34; }
+.service-options label { cursor: pointer; }
+.service-options [hidden] { display: none; }
+.included-service strong { color: #a3cdff; }
 .service-options label:focus-within { border-color: #a3cdff; }
 .service-options label:has(input:disabled) { cursor: not-allowed; }
 .service-options input { width: 22px; height: 22px; flex-shrink: 0; accent-color: #5297ff; }
