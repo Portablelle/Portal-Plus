@@ -25,18 +25,33 @@ export function bindLaunchOptions(document, browser) {
   const rtorrent = inputs.find(input => input.name === 'rtorrent');
   const botty = inputs.find(input => input.name === 'botty');
   ppr.disabled = !supportsPpr(browser.fw_str);
-  const read = () => Object.fromEntries(inputs.map(input => [input.name, input.checked]));
+  const pprAvailability = document.getElementById('ppr-availability');
+  pprAvailability.hidden = !ppr.disabled;
+  pprAvailability.textContent = ppr.disabled
+    ? 'A53 PPR is unavailable: it supports PS5 firmware up to 11.40 only. This browser firmware is incompatible or could not be identified.'
+    : '';
+  const read = () => ({ ...services, rtorrent: services.rtorrent || services.botty, ppr: services.ppr && !ppr.disabled });
   const summarize = () => {
     rtorrent.disabled = botty.checked;
-    const count = inputs.filter(input => input.checked && !['ppr', 'codex'].includes(input.name)).length;
-    document.getElementById('launch-options-summary').textContent = count + ' of 4 services enabled' + (ppr.checked ? ' + A53 PPR' : '') + (read().codex ? ' + Codex PS5' : '');
+    document.getElementById('rtorrent-option').hidden = botty.checked;
+    document.getElementById('rtorrent-included').hidden = !botty.checked;
+    const selected = read();
+    const names = [];
+    if (selected.botty) names.push('Botty+ (includes rTorrent)');
+    if (selected.ftp) names.push('FTP');
+    if (selected.rtorrent && !selected.botty) names.push('rTorrent');
+    if (selected.cheatrunner) names.push('CheatRunner');
+    if (selected.ppr) names.push('A53 PPR');
+    if (selected.codex) names.push('Codex PS5');
+    document.getElementById('launch-options-summary').textContent = names.join(', ') || 'Jailbreak only';
   };
   for (const input of inputs) {
     input.checked = services[input.name] && !input.disabled;
     input.addEventListener('change', () => {
+      services[input.name] = input.checked;
       summarize();
       try {
-        browser.localStorage.setItem(STORAGE_KEY, JSON.stringify(read()));
+        browser.localStorage.setItem(STORAGE_KEY, JSON.stringify(services));
         storageStatus.hidden = true;
         storageStatus.textContent = '';
       } catch {
