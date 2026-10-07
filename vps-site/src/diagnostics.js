@@ -30,7 +30,8 @@ export function safeLog(message) {
 export function optionalFailure(component, error) {
   return {
     ready: false, code: error?.code || 'OPTIONAL_SETUP_FAILED',
-    reason: safeLog(error?.message || String(error)),
+    deferred: error?.deferred === true,
+    reason: safeLog(error?.logMessage || error?.message || String(error)),
     diagnostic: `${component} is unavailable [${error?.code || 'OPTIONAL_SETUP_FAILED'}]. Your session remains usable. ${error?.action || 'The component state is unconfirmed. Check the session log; do not launch again in this session.'}`,
   };
 }

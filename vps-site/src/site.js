@@ -3,11 +3,12 @@ import { installWindowP } from "./utils/mem.js";
 
 
 
-import { cheatRunnerStatus } from './cheatrunner.js';
-import { codexStatus } from './codex.js';
+import { renderSessionResult } from './session-result.js';
+import { renderPostLaunch } from './post-launch.js';
 import { atStage, diagnosticError, failureStatus, safeLog } from './diagnostics.js';
 import { bindLaunchOptions } from './launch-options.js';
 import { launchSession } from "./launch.js";
+import { bindLaunchProgress, progressReporter } from './launch-progress.js';
 
 
 const output = document.getElementById("console");
@@ -85,6 +86,8 @@ const rejection = window.firmware.rejection();
 const firmwareDiagnostic = window.firmware.diagnostic();
 let started = false;
 const launchOptions = bindLaunchOptions(document, window);
+const progress = bindLaunchProgress(document);
+const reportProgress = progressReporter(event => progress.event(event));
 document.getElementById("firmware").textContent = firmwareDiagnostic ? firmwareDiagnostic.label : "PS5 / " + window.fw_str;
 button.disabled = Boolean(rejection);
 if (rejection) {
@@ -97,6 +100,7 @@ button.addEventListener("click", async () => {
   const services = launchOptions.lock();
   started = true;
   launchStartedAt = performance.now();
+  try { progress.start(services); } catch {}
   document.body.dataset.state = "launching";
   button.disabled = true;
   button.textContent = "LAUNCHING";
@@ -113,12 +117,14 @@ button.addEventListener("click", async () => {
       jailbreak: async () => { await atStage('Firmware offsets loading', () => window.offsetsReady); return await run(); },
       report,
       services,
+      onProgress: reportProgress,
       firmware: window.fw_str,
       confirmPpr: () => new Promise(resolve => {
         report('Wait for the A53 PPR success notification, then select CONTINUE. On failure, restart your PS5.');
         button.textContent = 'CONTINUE';
         button.disabled = false;
         button.setAttribute('aria-busy', 'false');
+        button.focus();
         button.addEventListener('click', () => {
           button.disabled = true;
           button.textContent = 'LAUNCHING';
@@ -127,23 +133,28 @@ button.addEventListener("click", async () => {
         }, { once: true });
       }),
     });
-    button.textContent = "READY";
-    status.textContent = result.native?.skipped
-      ? 'Jailbreak ready. Check the session log for selected service startup.'
-      : result.manager?.updatePending
-      ? "Press PS and open Botty+. Service update applies next console session; current work continues."
-      : "Press PS and open Botty+. Allow time for the home screen to refresh.";
-    status.textContent += ' ' + cheatRunnerStatus(result.cheatrunner);
-    if (services.codex) status.textContent += ' ' + codexStatus(result.codex);
-    status.textContent = safeLog(status.textContent);
+    button.textContent = "LAUNCH";
+    renderSessionResult(document, result.summary);
+    renderPostLaunch(document, result.summary);
+    status.textContent = result.summary.outcome === 'complete'
+      ? 'Session complete. See next steps and component confirmations below.'
+      : 'Jailbreak succeeded. See next steps and warnings below; confirmed services remain available.';
+    for (const component of [result.cheatrunner, result.codex]) {
+      if (component?.diagnostic) status.textContent += ' ' + safeLog(component.diagnostic);
+    }
     document.getElementById('cheatrunner').hidden = !result.cheatrunner?.ready;
     document.body.dataset.state = "ready";
   } catch (error) {
     button.textContent = "STOPPED";
     status.textContent = safeLog(failureStatus(error));
+    if (error.sessionResult) {
+      renderSessionResult(document, error.sessionResult);
+      renderPostLaunch(document, error.sessionResult);
+    }
     writeLog(`${error.stage || 'Session setup'} [${error.code || 'STEP_FAILED'}]: ${error.logMessage || error.message || String(error)}`, "error");
     document.body.dataset.state = "error";
   } finally {
+    reportProgress({ type: 'end', failed: document.body.dataset.state === 'error' });
     button.setAttribute("aria-busy", "false");
   }
 });

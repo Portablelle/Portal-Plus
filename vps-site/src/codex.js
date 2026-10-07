@@ -216,12 +216,12 @@ async function busy(io) {
 }
 export async function startCodex(io, options = {}) {
   const report = options.report || (() => {}), wait = options.wait || sleep;
-  if (await busy(io)) return { ready: false, reason: 'Codex update deferred while Botty is processing files.' };
+  if (await busy(io)) return { ready: false, deferred: true, reason: 'Codex update deferred while Botty is processing files.' };
   const install = options.install || installCodex;
   const installed = await install(io, {...options, beforePublish: async () => {
-    if (await busy(io)) throw Error('Codex update deferred: Botty started processing files.');
+    if (await busy(io)) throw Object.assign(Error('Codex update deferred: Botty started processing files.'), { deferred: true });
   }});
-  if (await busy(io)) return {ready: false, reason: 'Codex startup deferred while Botty is processing files.'};
+  if (await busy(io)) return {ready: false, deferred: true, reason: 'Codex startup deferred while Botty is processing files.'};
   if (await io.listening(49322)) {
     let status;
     try { const r = await io.http(49323, '/status'); if (r.status === 200) status = JSON.parse(r.body); } catch (_) {}
@@ -241,7 +241,7 @@ export async function startCodex(io, options = {}) {
     }
     if (!closed) throw Error('Previous Codex engine is still stopping. No payload sent.');
   }
-  if (await busy(io)) return {ready: false, reason: 'Codex startup deferred while Botty is processing files.'};
+  if (await busy(io)) return {ready: false, deferred: true, reason: 'Codex startup deferred while Botty is processing files.'};
   if (await io.listening(49322)) throw Error('Another Codex engine started during update. No payload sent.');
   report('Starting Codex PS5 (verified transfer)…');
   await io.deliverPayload();

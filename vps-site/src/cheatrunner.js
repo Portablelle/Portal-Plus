@@ -136,7 +136,7 @@ export async function installAndStartCheatRunner(io, options = {}) {
 export function cheatRunnerStatus(result) {
   if (result?.diagnostic) return result.diagnostic;
   if (!result?.ready) return result?.reason || 'CheatRunner is unavailable; Botty is ready.';
-  let text = result.tileRegistered ? 'CheatRunner is ready in Media on the home screen.' : 'CheatRunner is online; its Media tile registration is not confirmed.';
+  let text = result.tileRegistered ? 'CheatRunner is online; its Media tile is registered. Home screen visibility is not confirmed.' : 'CheatRunner is online; its Media tile registration is not confirmed.';
   if (result.updatePending) text += ' The running version was preserved; update on the next console session.';
   if (result.hotkeyEnabled) text += ' The existing ShellUI hotkey setting is enabled; it was not changed.';
   return text;

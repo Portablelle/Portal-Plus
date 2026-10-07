@@ -9,6 +9,9 @@ import { cheatRunnerStatus } from '../vps-site/src/cheatrunner.js';
 import { codexStatus } from '../vps-site/src/codex.js';
 import { NativeIO } from '../vps-site/src/botty-native.js';
 import { sendPayload } from '../vps-site/src/payload-sender.js';
+import { renderSessionResult } from '../vps-site/src/session-result.js';
+import { renderPostLaunch } from '../vps-site/src/post-launch.js';
+import { bindLaunchProgress, progressReporter } from '../vps-site/src/launch-progress.js';
 
 const firmwareSource = await readFile(new URL('../vps-site/src/firmware.js', import.meta.url), 'utf8');
 const siteSource = (await readFile(new URL('../vps-site/src/site.js', import.meta.url), 'utf8')).replace(/^import .*;\s*$/gm, '').replace('import("./relapse_exploit.js")', 'loadKernelModule()');
@@ -142,17 +145,23 @@ for(const successfulWrites of [0,1])test('rejected payload WRITE retains partial
 
 function screen(agent, launch, overrides = {}) {
   const elements = new Map();
-  for (const id of ['console','launch','status','firmware','cheatrunner']) elements.set(id, {
+  const element = () => ({
     textContent:'',hidden:true,children:[],attributes:{},listeners:{},
+    dataset: {},
     appendChild(child){this.children.push(child);this.lastElementChild=child;},
+    append(...children){children.forEach(child=>this.appendChild(child));},
+    replaceChildren(){this.children=[];},
     setAttribute(name,value){this.attributes[name]=value;},
+    removeAttribute(name){delete this.attributes[name];},
     addEventListener(name,handler){this.listeners[name]=handler;},focus(){},
   });
-  const document={getElementById:id=>elements.get(id),createElement:()=>({}),body:{dataset:{}}};
+  for (const id of ['console','launch','status','firmware','cheatrunner','session-result','post-launch','post-launch-instructions','launch-progress','launch-steps','launch-elapsed','launch-progress-status']) elements.set(id, element());
+  const document={getElementById:id=>elements.get(id),createElement:element,body:{dataset:{}}};
   const context={document,window:{},navigator:{userAgent:agent},performance:{now:()=>0},
     requestAnimationFrame:callback=>callback(),setTimeout:callback=>callback(),
     bindLaunchOptions:()=>({lock:()=>({codex:true})}),launchSession:launch,
-    cheatRunnerStatus,codexStatus,atStage,diagnosticError,failureStatus,safeLog,...overrides};
+    cheatRunnerStatus,codexStatus,atStage,diagnosticError,failureStatus,safeLog,
+    renderSessionResult,renderPostLaunch,bindLaunchProgress,progressReporter,...overrides};
   vm.runInNewContext(firmwareSource,context);
   vm.runInNewContext(siteSource,context);
   return {elements,document,context};
@@ -190,7 +199,7 @@ test('optional screen remains READY and presents both failed components without 
   })));
   await view.elements.get('launch').listeners.click();
   assert.equal(view.document.body.dataset.state,'ready');
-  assert.equal(view.elements.get('launch').textContent,'READY');
+  assert.equal(view.elements.get('launch').textContent,'LAUNCH');
   assert.equal(view.elements.get('launch').disabled,true);
   assert.equal(view.elements.get('cheatrunner').hidden,true);
   const status=view.elements.get('status').textContent;
