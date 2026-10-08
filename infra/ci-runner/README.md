@@ -290,7 +290,7 @@ retained teardown. Three two-second controller calls bound this verification.
 Its Docker/API client descendants cannot remain behind the verified boundary. Docker
 containers are separately reaped by the pinned stop helper as before. Recovery
 has a 160-second runtime ceiling and does not reserve job capacity.
-an absent record before admission or for a legacy service uses only validated
+An absent record before admission or for a legacy service uses only validated
 legacy/current fallback paths. No arbitrary source path can be dispatched.
 No completion
 marker can suppress recovery; manual or unverifiable-context exits call the same

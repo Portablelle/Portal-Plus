@@ -167,7 +167,7 @@ else:
         self.assertIn('sudo mv -fT "$temporary" "$destination"', source)
         self.assertNotIn('sudo install -o gh-runner -g gh-runner -m 644 "$file"', source)
 
-    def install_fixture(self, bad_placement=False, active_slice=False, bad_limit=False, legacy_container=False, slot="portal-2"):
+    def install_fixture(self, bad_placement=False, active_slice=False, bad_limit=False, legacy_container=False, slot="portal-2", provision_failure=False):
         sudo = '''#!/usr/bin/env python3
 import json, os, pathlib, shutil, subprocess, sys, tempfile
 args = sys.argv[1:]
@@ -218,6 +218,7 @@ elif args[0] not in ("modprobe", "sysctl", "loginctl", "visudo"):
             shutil.copytree(ROOT, checkout)
             (checkout / "provision-codex-workspace.sh").write_text('''#!/usr/bin/env bash
 python3 -c 'import json,os,sys; open(os.environ["COMMAND_LOG"],"a").write(json.dumps(["provision",sys.argv[1]])+"\\n")' "$1"
+[[ ${PROVISION_FAILURE:-} != 1 ]] || exit 9
 ''')
             binaries = root / "bin"
             binaries.mkdir()
@@ -250,7 +251,8 @@ python3 -c 'import json,os,sys; open(os.environ["COMMAND_LOG"],"a").write(json.d
                                          "FIXTURE_ROOT": directory, "COMMAND_LOG": str(log), "PLUS_CI_BUDGET_APPROVED": "yes",
                                          "BAD_PLACEMENT": "1" if bad_placement else "",
                                          "ACTIVE_SLICE": "1" if active_slice else "", "BAD_LIMIT": "1" if bad_limit else "",
-                                         "LEGACY_CONTAINER": "1" if legacy_container else ""},
+                                         "LEGACY_CONTAINER": "1" if legacy_container else "",
+                                         "PROVISION_FAILURE": "1" if provision_failure else ""},
                                     capture_output=True, text=True, timeout=20)
             commands = [json.loads(line) for line in log.read_text().splitlines()]
             return result, commands, (live / "current/clean-codex-workspace.sh").read_text() if (live / "current").exists() else None, \
@@ -315,10 +317,20 @@ python3 -c 'import json,os,sys; open(os.environ["COMMAND_LOG"],"a").write(json.d
         result, commands, _, _, _, _, _, _ = self.install_fixture(slot="codex-2")
         self.assertEqual(result.returncode, 0, result.stderr)
         provision = next(i for i, c in enumerate(commands) if c == ["provision", "codex-2"])
-        guard = max(i for i, c in enumerate(commands) if c[:2] == ["docker", "ps"] and "--format" in c)
+        guard = next(i for i, c in enumerate(commands) if c == ["docker", "ps", "-a", "--format", "{{.Names}}", "--filter", "name=^/plus-(botty|portal|codex)(-2)?$"])
         enable = next(i for i, c in enumerate(commands) if c[:3] == ["systemctl", "--user", "enable"])
         self.assertLess(guard, provision)
         self.assertLess(provision, enable)
+
+    def test_failed_scratch_provision_preserves_live_broker_and_helpers(self):
+        result, commands, cleanup, slot, _, stages, legacy, roots = self.install_fixture(slot="codex-2", provision_failure=True)
+        self.assertEqual(result.returncode, 9, result.stderr)
+        self.assertIsNone(cleanup)
+        self.assertIsNone(slot)
+        self.assertEqual(roots, ("legacy broker\n", "legacy sudoers\n"))
+        self.assertEqual(legacy, "legacy cleanup helper\n")
+        self.assertEqual(stages, [])
+        self.assertFalse(any(c[:3] == ["systemctl", "--user", "enable"] for c in commands))
 
 
 if __name__ == "__main__":

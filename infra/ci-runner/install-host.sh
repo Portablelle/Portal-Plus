@@ -114,6 +114,18 @@ for slot in "${slots[@]}"; do
     exit 1
   fi
 done
+guard_output=
+migration_required=false
+if guard_output=$(sudo -u gh-runner env HOME=/home/gh-runner XDG_RUNTIME_DIR=/run/user/1001 \
+  DOCKER_HOST=unix:///run/user/1001/docker.sock PATH=/home/gh-runner/bin:/usr/bin:/bin \
+  timeout --kill-after=2 25 bash "$stage/verify-budget.sh" 2>&1); then
+  if $add_codex; then bash ./provision-codex-workspace.sh "${slots[0]}"; fi
+elif [[ $guard_output == PLUS_LEGACY_MIGRATION_REQUIRED:* ]]; then
+  migration_required=true
+else
+  printf '%s\n' "$guard_output" >&2
+  exit 1
+fi
 atomic_install root root 755 "$broker_stage/plus-runner-api" /usr/local/sbin/plus-runner-api
 atomic_install root root 440 plus-runner.sudoers /etc/sudoers.d/plus-runner
 sudo install -d -o gh-runner -g gh-runner -m 755 /home/gh-runner/plus-runner/releases
@@ -135,12 +147,15 @@ sudo -u gh-runner env HOME=/home/gh-runner XDG_RUNTIME_DIR=/run/user/1001 \
     mkdir -p ~/.config/systemd/user
     cp ~/plus-runner/current/*.service ~/plus-runner/current/*.timer ~/plus-runner/current/*.slice ~/.config/systemd/user/
     systemctl --user daemon-reload
-    timeout --kill-after=2 25 bash ~/plus-runner/current/verify-budget.sh
   '
-if $add_codex; then bash ./provision-codex-workspace.sh "${slots[0]}"; fi
+if $migration_required; then
+  printf '%s\n' "$guard_output" >&2
+  exit 1
+fi
 sudo -u gh-runner env HOME=/home/gh-runner XDG_RUNTIME_DIR=/run/user/1001 \
   DOCKER_HOST=unix:///run/user/1001/docker.sock PATH=/home/gh-runner/bin:/usr/bin:/bin bash -c '
     set -euo pipefail
+    timeout --kill-after=2 25 bash ~/plus-runner/current/verify-budget.sh
     units=()
     for slot in "$@"; do units+=("plus-runner@$slot"); done
     systemctl --user enable "${units[@]}" plus-runner-image.timer

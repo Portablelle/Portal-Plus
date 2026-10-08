@@ -111,15 +111,15 @@ if [[ ${INVOCATION_ID:-} =~ ^[0-9a-fA-F]{32}$ ]]; then
   fi
 fi
 if [[ $script_dir == /home/gh-runner/plus-runner/releases/* && -n ${INVOCATION_ID:-} ]]; then
+  if ! $managed_service; then
+    echo "INVOCATION_OWNER_NOT_VERIFIED: no job admitted." >&2
+    exit 1
+  fi
   timeout --kill-after=2 5 python3 "$script_dir/invocation-release.py" record "$slot" "${INVOCATION_ID:-}" "$script_dir" || {
     echo "INVOCATION_RELEASE_NOT_VERIFIED: no job admitted." >&2
     exit 1
   }
   binding_recorded=true
-  if ! $managed_service; then
-    echo "INVOCATION_OWNER_NOT_VERIFIED: no job admitted." >&2
-    exit 1
-  fi
   recovery_unit="plus-runner-$slot-recovery-$INVOCATION_ID.service"
   systemd-run --user --quiet --wait --collect --unit="$recovery_unit" \
     --property=Type=exec --property=KillMode=control-group --property=KillSignal=SIGKILL \

@@ -79,6 +79,17 @@ def recover(slot, invocation, directory):
     record(slot, invocation, directory)
 
 
+def require_empty_cgroup(directory):
+    try:
+        events = dict(line.split() for line in (directory / "cgroup.events").read_text().splitlines())
+    except FileNotFoundError:
+        if directory.exists():
+            raise
+        return
+    if events.get("populated") != "0":
+        raise ValueError("Recovery descendants are still present.")
+
+
 def quiesce_recovery(slot, invocation):
     journal(slot, invocation)
     unit = f"plus-runner-{slot}-recovery-{invocation}.service"
@@ -92,8 +103,9 @@ def quiesce_recovery(slot, invocation):
     if fields.get("Id") != unit:
         raise ValueError("Recovery unit identity is not verified.")
     if fields.get("LoadState") == "not-found":
-        if fields.get("ActiveState") != "inactive" or directory.exists():
+        if fields.get("ActiveState") != "inactive":
             raise ValueError("Recovery unit disappearance is not verified.")
+        require_empty_cgroup(directory)
         return
     if reply.returncode or fields.get("LoadState") != "loaded" or fields.get("BindsTo") != parent or parent not in fields.get("After", "").split():
         raise ValueError("Recovery unit association is not verified.")
@@ -104,10 +116,7 @@ def quiesce_recovery(slot, invocation):
     stopped = dict(line.split("=", 1) for line in reply.stdout.splitlines())
     if stopped.get("Id") != unit or stopped.get("ActiveState") not in ("inactive", "failed") or stopped.get("ControlGroup") not in ("", group):
         raise ValueError("Recovery unit is not quiescent.")
-    if directory.exists():
-        events = dict(line.split() for line in (directory / "cgroup.events").read_text().splitlines())
-        if events.get("populated") != "0":
-            raise ValueError("Recovery descendants are still present.")
+    require_empty_cgroup(directory)
 
 
 def selected_stop(slot, invocation):

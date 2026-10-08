@@ -42,7 +42,7 @@ class InvocationReleaseTests(unittest.TestCase):
             (directory / "slot.sh").write_text(slot)
             shutil.copyfile(directory / "stop-slot.sh", directory / "real-stop.sh")
             (directory / "stop-slot.sh").write_text(
-                '#!/usr/bin/env bash\nif [[ ${TEST_POST_STOP:-} == yes ]]; then python3 "$(dirname "$0")/assert-quiescent.py"; fi\nprintf "%s\\n" ' + label +
+                '#!/usr/bin/env bash\nif [[ ${TEST_POST_STOP:-} == yes ]]; then python3 "$(dirname "$0")/assert-quiescent.py" || exit 1; fi\nprintf "%s\\n" ' + label +
                 ' >>"${XDG_RUNTIME_DIR}/stop-releases"\nexec bash "$(dirname "$0")/real-stop.sh" "$@"\n')
             (directory / "assert-quiescent.py").write_text('''import json, os, pathlib, subprocess
 root = pathlib.Path(os.environ["XDG_RUNTIME_DIR"])
@@ -248,6 +248,43 @@ if metadata.exists():
             with self.assertRaises(ValueError):
                 pinning.quiesce_recovery("codex", lifecycle.INVOCATION)
             self.assertEqual(run.call_count, 1)
+
+    def test_collected_unit_accepts_empty_cgroup_but_rejects_live_descendants(self):
+        unit = "plus-runner-codex-recovery-" + lifecycle.INVOCATION + ".service"
+        output = "Id=" + unit + "\nLoadState=not-found\nActiveState=inactive\nControlGroup=\n"
+        directory = pinning.CGROUP_FILES / (pinning.CGROUP_BASE + "/" + unit).lstrip("/")
+        directory.mkdir(parents=True)
+        for populated in ("0", "1"):
+            (directory / "cgroup.events").write_text("populated " + populated + "\n")
+            with self.subTest(populated=populated), patch.object(pinning.subprocess, "run", return_value=subprocess.CompletedProcess([], 1, stdout=output)) as run:
+                if populated == "0":
+                    pinning.quiesce_recovery("codex", lifecycle.INVOCATION)
+                else:
+                    with self.assertRaisesRegex(ValueError, "Recovery descendants"):
+                        pinning.quiesce_recovery("codex", lifecycle.INVOCATION)
+                self.assertEqual(run.call_count, 1)
+
+    def test_quiescence_assertion_failure_prevents_real_stop_helper(self):
+        (self.old / "assert-quiescent.py").write_text('raise AssertionError("injected live recovery")\n')
+        result = subprocess.run(["bash", str(self.old / "stop-slot.sh"), "codex"],
+                                env={**self.fixture.env, "TEST_POST_STOP": "yes"},
+                                capture_output=True, text=True, timeout=10)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("injected live recovery", result.stderr)
+        self.assertFalse((self.fixture.root / "stop-releases").exists())
+
+    def test_unverified_service_owner_creates_no_invocation_record(self):
+        state = json.loads(self.fixture.state.read_text())
+        state["managed_context"] = False
+        self.fixture.state.write_text(json.dumps(state))
+        process = subprocess.Popen(["bash", str(self.current / "slot.sh"), "codex"],
+                                   env={**self.fixture.env, "INVOCATION_ID": lifecycle.INVOCATION},
+                                   stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.addCleanup(self.fixture.stop_process, process)
+        _, error = process.communicate(timeout=15)
+        self.assertEqual(process.returncode, 1, error)
+        self.assertIn("INVOCATION_OWNER_NOT_VERIFIED", error)
+        self.assertFalse(pinning.journal("codex", lifecycle.INVOCATION).exists())
 
     def test_failed_startup_recovery_retains_old_and_new_bindings_until_success(self):
         old_id, new_id = "a" * 32, "b" * 32
