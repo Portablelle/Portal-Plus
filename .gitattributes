@@ -1,2 +1,3 @@
 *.rgb binary
 *.rgba binary
+vps-site/apps/codex/chunks/*.bin binary
