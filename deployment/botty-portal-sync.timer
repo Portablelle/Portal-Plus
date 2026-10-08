@@ -1,5 +1,5 @@
 [Unit]
-Description=Check Portal+ and Botty+ main after each synchronization
+Description=Check Portal+, Botty+ and Codex PS5 main after each synchronization
 
 [Timer]
 OnBootSec=30s

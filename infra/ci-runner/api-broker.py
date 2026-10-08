@@ -1,5 +1,5 @@
 #!/usr/bin/python3 -I
-"""Root-owned broker: only JIT creation/deletion for the two Plus repositories."""
+"""Root-owned broker: only JIT creation/deletion for explicitly allowed repositories."""
 import json
 import os
 import re
@@ -7,14 +7,16 @@ import subprocess
 import sys
 import time
 
-REPOSITORIES = {"botty": "Portablelle/Botty-Plus", "portal": "Portablelle/Portal-Plus"}
+REPOSITORIES = {"botty": "Portablelle/Botty-Plus", "portal": "Portablelle/Portal-Plus",
+                "codex": "Portablelle/Codex-PS5"}
+LABELS = {"botty": "botty-plus-ci", "portal": "portal-plus-ci", "codex": "codex-ps5-ci"}
 
 
 def main():
     if os.geteuid() != 0:
         raise SystemExit("Install this broker as root and invoke it through sudo.")
     if len(sys.argv) not in (3, 4) or sys.argv[1] not in REPOSITORIES:
-        raise SystemExit("Usage: plus-runner-api <botty|portal> <create|delete ID>")
+        raise SystemExit("Usage: plus-runner-api <botty|portal|codex> <create|delete ID>")
     slot, operation = sys.argv[1:3]
     path = f"repos/{REPOSITORIES[slot]}/actions/runners"
     payload = None
@@ -24,7 +26,7 @@ def main():
         payload = json.dumps({
             "name": f"dedie-{slot}-plus-{time.time_ns()}",
             "runner_group_id": 1,
-            "labels": ["self-hosted", "linux", "x64", f"{slot}-plus-ci"],
+            "labels": ["self-hosted", "linux", "x64", LABELS[slot]],
             "work_folder": "_work",
         })
     elif operation == "delete" and len(sys.argv) == 4 and re.fullmatch(r"[1-9][0-9]*", sys.argv[3]):

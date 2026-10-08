@@ -3,9 +3,20 @@
 set -euo pipefail
 umask 077
 slot=$1
-[[ $slot == botty || $slot == portal ]] || exit 2
+[[ $slot == botty || $slot == portal || $slot == codex ]] || exit 2
 container=plus-$slot
 network=plus-ci-$slot
+image=plus-runner:latest
+home_mount=(--tmpfs /home/runner:rw,exec,nosuid,nodev,size=4g,uid=1001,gid=1001,mode=0700)
+if [[ $slot == codex ]]; then
+  image=codex-runner:latest
+  workspace=/home/gh-runner/codex-workspace
+  mountpoint -q "$workspace" && [[ $(findmnt -n -o FSTYPE --target "$workspace") == ext4 ]] || {
+    echo "CODEX_WORKSPACE_NOT_READY: provision the dedicated bounded filesystem first." >&2
+    exit 1
+  }
+  home_mount=(--mount "type=bind,src=$workspace,dst=/home/runner")
+fi
 state="${XDG_RUNTIME_DIR:?}/plus-runner-$slot"
 mkdir -p "$state"
 runner_id=
@@ -25,6 +36,9 @@ cleanup() {
   timeout 25 docker stop --time 20 "$container" >/dev/null 2>&1 || true
   timeout 10 docker rm -f "$container" >/dev/null 2>&1 || true
   unregister || true
+  if [[ $slot == codex ]]; then
+    bash "$(dirname "$0")/clean-codex-workspace.sh" || true
+  fi
 }
 trap 'exit 0' TERM INT
 trap cleanup EXIT
@@ -63,6 +77,11 @@ while true; do
     continue
   fi
   docker rm -f "$container" >/dev/null 2>&1 || true
+  if [[ $slot == codex ]] && ! bash "$(dirname "$0")/clean-codex-workspace.sh"; then
+    echo "CODEX_WORKSPACE_CLEANUP_FAILED" >&2
+    backoff
+    continue
+  fi
   if ! reply=$(sudo -n /usr/local/sbin/plus-runner-api "$slot" create); then
     echo "JIT_REGISTRATION_FAILED: retrying in $retry_delay s; check the broker error above." >&2
     backoff
@@ -91,10 +110,10 @@ while true; do
     --env RUNNER_TOOL_CACHE=/home/runner/_toolcache --network "$network" \
     --cpus 4 --memory 8g --memory-swap 8g --pids-limit 4096 \
     --read-only --cap-drop ALL --security-opt no-new-privileges \
-    --tmpfs /home/runner:rw,exec,nosuid,nodev,size=4g,uid=1001,gid=1001,mode=0700 \
+    "${home_mount[@]}" \
     --tmpfs /tmp:rw,exec,nosuid,nodev,size=2g,mode=1777 \
     --log-driver local --log-opt max-size=10m --log-opt max-file=2 \
-    --entrypoint bash plus-runner:latest -c '
+    --entrypoint bash "$image" -c '
       set -euo pipefail
       cp -a /opt/actions-runner/. /home/runner/
       cp -a /opt/hostedtoolcache /home/runner/_toolcache
@@ -113,6 +132,11 @@ while true; do
   wait $! || session_status=$?
   docker rm -f "$container" >/dev/null 2>&1 || true
   unregister || true
+  if [[ $slot == codex ]] && ! bash "$(dirname "$0")/clean-codex-workspace.sh"; then
+    echo "CODEX_WORKSPACE_CLEANUP_FAILED" >&2
+    backoff
+    continue
+  fi
   if ((session_status != 0)); then
     echo "RUNNER_SESSION_FAILED: exit $session_status" >&2
     backoff

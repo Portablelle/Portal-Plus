@@ -2,7 +2,7 @@
 # ExecStopPost also runs after an unexpected or forced death of slot.sh.
 set -euo pipefail
 slot=$1
-[[ $slot == botty || $slot == portal ]] || exit 2
+[[ $slot == botty || $slot == portal || $slot == codex ]] || exit 2
 container=plus-$slot
 timeout 25 docker stop --time 20 "$container" >/dev/null 2>&1 || true
 timeout 10 docker rm -f "$container" >/dev/null 2>&1 || true
@@ -18,3 +18,6 @@ if [[ -f "$state/runner-id" ]]; then
   sudo -n /usr/local/sbin/plus-runner-api "$slot" delete "$runner_id"
 fi
 rm -f "$state/runner-id" "$state"/jit.*
+if [[ $slot == codex ]]; then
+  bash "$(dirname "$0")/clean-codex-workspace.sh"
+fi
