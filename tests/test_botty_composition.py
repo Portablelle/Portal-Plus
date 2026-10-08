@@ -49,6 +49,30 @@ class CompositionTests(unittest.TestCase):
         self.assertIn(contract.digest(path), code)
         self.assertEqual(json.loads((self.portal / 'manifest.json').read_text())['bottyCommit'], 'a' * 40)
 
+    def test_new_rtorrent_version_updates_installer_and_portal_manifest(self):
+        path = self.botty / 'packages/rtorrent/manifest.json'
+        manifest = json.loads(path.read_text())
+        manifest['id'] = '0.16.24-botty5'
+        path.write_text(json.dumps(manifest))
+        self.refresh()
+        compose.compose(self.portal, self.botty)
+        validator.verify(self.portal)
+        code = (self.portal / 'src/rtorrent.js').read_text()
+        self.assertIn("const VERSION='0.16.24-botty5';", code)
+        self.assertIn(contract.digest(path), code)
+
+    def test_invalid_rtorrent_version_keeps_original_portal_untouched(self):
+        path = self.botty / 'packages/rtorrent/manifest.json'
+        manifest = json.loads(path.read_text())
+        manifest['id'] = '../state'
+        path.write_text(json.dumps(manifest))
+        self.refresh()
+        before = (self.portal / 'apps/rtorrent/manifest.json').read_bytes()
+        with self.assertRaisesRegex(ValueError, 'Invalid rTorrent version'):
+            compose.compose(self.portal, self.botty)
+        self.assertEqual((self.portal / 'apps/rtorrent/manifest.json').read_bytes(), before)
+        validator.verify(self.portal)
+
     def test_corrupt_delivery_keeps_original_portal_untouched(self):
         before = (self.portal / 'manifest.json').read_bytes()
         (self.botty / 'packages/botty/botty-manager.elf').write_bytes(b'broken')

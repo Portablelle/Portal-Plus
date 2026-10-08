@@ -82,6 +82,13 @@ def verify_packages(root):
         if not match or digest(manifest) != match[1]:
             raise ValueError('Installer manifest pin mismatch: ' + package)
         data = json.loads(manifest.read_text())
+        if package == 'rtorrent':
+            version = data.get('id')
+            pin = re.search(r"const\s+VERSION\s*=\s*'([^']+)'", code)
+            if (not isinstance(version, str) or
+                    not re.fullmatch(r'[0-9]+(?:\.[0-9]+){2}-botty[0-9]+', version) or
+                    not pin or pin[1] != version):
+                raise ValueError('Installer version mismatch: rtorrent')
         entries = data['files'] + ([data['helper']] if 'helper' in data else [])
         seen = set()
         for entry in entries:
