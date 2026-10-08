@@ -66,6 +66,32 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def rtorrent_version(data):
+    version = data.get('id')
+    if not isinstance(version, str):
+        raise ValueError('Missing or non-string rTorrent package id')
+    if not re.fullmatch(r'[0-9]+(?:\.[0-9]+){2}-botty[0-9]+', version):
+        raise ValueError('Invalid rTorrent version format: ' + version)
+    return version
+
+
+# Skip comments and string literals before considering a standalone declaration.
+RTORRENT_VERSION_TOKEN = re.compile(
+    r"^[ \t]*const[ \t]+VERSION[ \t]*=[ \t]*'(?P<version>[^'\r\n]+)'[ \t]*;[ \t]*(?=\r?$)"
+    r"|//[^\r\n]*|/\*[\s\S]*?\*/"
+    r"|'(?:\\[\s\S]|[^'\\])*'|\"(?:\\[\s\S]|[^\"\\])*\"|`(?:\\[\s\S]|[^`\\])*`",
+    re.MULTILINE)
+
+
+def rtorrent_version_pin(code):
+    pins = [match for match in RTORRENT_VERSION_TOKEN.finditer(code) if match['version'] is not None]
+    if not pins:
+        raise ValueError('Missing rTorrent installer VERSION declaration')
+    if len(pins) != 1:
+        raise ValueError('Multiple rTorrent installer VERSION declarations')
+    return pins[0]
+
+
 def verify_packages(root):
     for package, installer, constant in (
         ('codex', 'codex-install.js', 'HASH'),
@@ -83,12 +109,11 @@ def verify_packages(root):
             raise ValueError('Installer manifest pin mismatch: ' + package)
         data = json.loads(manifest.read_text())
         if package == 'rtorrent':
-            version = data.get('id')
-            pin = re.search(r"const\s+VERSION\s*=\s*'([^']+)'", code)
-            if (not isinstance(version, str) or
-                    not re.fullmatch(r'[0-9]+(?:\.[0-9]+){2}-botty[0-9]+', version) or
-                    not pin or pin[1] != version):
-                raise ValueError('Installer version mismatch: rtorrent')
+            version = rtorrent_version(data)
+            pin = rtorrent_version_pin(code)
+            if pin['version'] != version:
+                raise ValueError('Installer version mismatch: rtorrent (installer ' +
+                                 pin['version'] + ', package ' + version + ')')
         entries = data['files'] + ([data['helper']] if 'helper' in data else [])
         seen = set()
         for entry in entries:

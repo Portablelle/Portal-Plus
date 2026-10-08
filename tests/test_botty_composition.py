@@ -55,10 +55,18 @@ class CompositionTests(unittest.TestCase):
         manifest['id'] = '0.16.24-botty5'
         path.write_text(json.dumps(manifest))
         self.refresh()
+        installer = self.portal / 'src/rtorrent.js'
+        comment = "// const VERSION='0.16.24-botty4';\n"
+        installer.write_text(comment + installer.read_text())
+        portal_manifest = self.portal / 'manifest.json'
+        index = json.loads(portal_manifest.read_text())
+        index['sha256']['src/rtorrent.js'] = validator.digest(installer)
+        portal_manifest.write_text(json.dumps(index))
         compose.compose(self.portal, self.botty)
         validator.verify(self.portal)
         code = (self.portal / 'src/rtorrent.js').read_text()
         self.assertIn("const VERSION='0.16.24-botty5';", code)
+        self.assertTrue(code.startswith(comment))
         self.assertIn(contract.digest(path), code)
 
     def test_invalid_rtorrent_version_keeps_original_portal_untouched(self):
