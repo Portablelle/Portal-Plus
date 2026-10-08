@@ -40,7 +40,7 @@ def until(path):
             raise RuntimeError("admission fixture timed out")
         time.sleep(0.01)
 if name == "timeout":
-    command = next((index for index, arg in enumerate(args) if arg in ("cat", "docker", "sudo", "tail", "systemctl", "bash")), None)
+    command = next((index for index, arg in enumerate(args) if arg in ("cat", "docker", "sudo", "tail", "systemctl", "bash", "python3")), None)
     if command is None:
         raise RuntimeError("timeout fixture received no supported client: " + repr(args))
     sys.exit(subprocess.run(args[command:]).returncode)

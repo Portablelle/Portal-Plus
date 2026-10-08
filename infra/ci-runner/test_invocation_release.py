@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 import signal
 import subprocess
+import time
 import unittest
 from unittest.mock import patch
 
@@ -34,14 +35,27 @@ class InvocationReleaseTests(unittest.TestCase):
                     shutil.copyfile(source, directory / source.name)
             program = (directory / "invocation-release.py").read_text().replace(
                 'Path("/home/gh-runner/plus-runner")', f"Path({str(self.base)!r})")
+            program = program.replace('Path("/sys/fs/cgroup")', f"Path({str(self.fixture.root.resolve() / 'cgroups')!r})")
             (directory / "invocation-release.py").write_text(program)
             slot = (directory / "slot.sh").read_text().replace(
                 "/home/gh-runner/plus-runner/releases/", str(self.releases) + "/")
             (directory / "slot.sh").write_text(slot)
             shutil.copyfile(directory / "stop-slot.sh", directory / "real-stop.sh")
             (directory / "stop-slot.sh").write_text(
-                '#!/usr/bin/env bash\nprintf "%s\\n" ' + label +
+                '#!/usr/bin/env bash\nif [[ ${TEST_POST_STOP:-} == yes ]]; then python3 "$(dirname "$0")/assert-quiescent.py"; fi\nprintf "%s\\n" ' + label +
                 ' >>"${XDG_RUNTIME_DIR}/stop-releases"\nexec bash "$(dirname "$0")/real-stop.sh" "$@"\n')
+            (directory / "assert-quiescent.py").write_text('''import json, os, pathlib, subprocess
+root = pathlib.Path(os.environ["XDG_RUNTIME_DIR"])
+unit = "plus-runner-codex-recovery-" + os.environ["INVOCATION_ID"] + ".service"
+metadata = root / (unit + ".json")
+if metadata.exists():
+    state = json.loads(metadata.read_text())
+    assert not state["active"], state
+    assert (root / "cgroups" / state["group"].lstrip("/") / "cgroup.events").read_text() == "populated 0\\n"
+    for pid in state.get("members", []):
+        status = subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip()
+        assert not status or status.startswith("Z"), (pid, status)
+''')
         self.current = self.base / "current"
         self.current.symlink_to(self.old, target_is_directory=True)
         self.dispatcher = self.base / "post-stop.py"
@@ -49,6 +63,7 @@ class InvocationReleaseTests(unittest.TestCase):
         self.fixture.slot_script = self.current / "slot.sh"
         self.addCleanup(patch.stopall)
         patch.object(pinning, "ROOT", self.base).start()
+        patch.object(pinning, "CGROUP_FILES", self.fixture.root.resolve() / "cgroups").start()
         patch.dict(os.environ, {"XDG_RUNTIME_DIR": str(self.fixture.root)}).start()
 
     def swap(self):
@@ -146,12 +161,126 @@ class InvocationReleaseTests(unittest.TestCase):
         legacy = self.base / "stop-slot.sh"
         legacy.write_text("legacy helper")
         self.assertEqual(pinning.selected_stop("codex", lifecycle.INVOCATION)[0], legacy)
+        self.assertEqual(pinning.selected_stop("codex-2", lifecycle.INVOCATION)[0], self.old / "stop-slot.sh")
         legacy.unlink()
         stop = self.old / "stop-slot.sh"
         stop.unlink()
         stop.symlink_to(self.new / "stop-slot.sh")
         with self.assertRaises(ValueError):
             pinning.selected_stop("codex", lifecycle.INVOCATION)
+
+    def test_failed_teardown_new_invocation_recovers_old_release_before_admission(self):
+        process, env = self.fixture.start()
+        state = json.loads(self.fixture.state.read_text())
+        state["broker_failure"] = 7
+        self.fixture.state.write_text(json.dumps(state))
+        process.kill()
+        process.communicate(timeout=10)
+        self.assertEqual(self.post(env).returncode, 7)
+        old_marker = pinning.journal("codex", lifecycle.INVOCATION)
+        sibling = pinning.journal("codex-2", "c" * 32)
+        pinning.record("codex-2", "c" * 32, str(self.old))
+        self.swap()
+        state = json.loads(self.fixture.state.read_text())
+        state["broker_failure"] = 0
+        self.fixture.state.write_text(json.dumps(state))
+        (self.fixture.root / "slot-started").unlink(missing_ok=True)
+        cutoff = len(self.fixture.commands())
+        process, env = self.fixture.start(invocation="b" * 32)
+        self.assertFalse(old_marker.exists())
+        self.assertTrue(sibling.exists())
+        self.assertEqual(json.loads(pinning.journal("codex", "b" * 32).read_text())["release"], self.new.name)
+        commands = self.fixture.commands()[cutoff:]
+        cleanup = next(i for i, c in enumerate(commands) if c[-3:] == ["codex", "delete", "42"])
+        create = next(i for i, c in enumerate(commands) if c[0] == "sudo" and c[-1] == "create")
+        self.assertLess(cleanup, create)
+        self.assertEqual((self.fixture.root / "stop-releases").read_text().splitlines()[:2], ["old", "old"])
+        process.terminate()
+        process.communicate(timeout=10)
+        self.assertEqual(self.post(env).returncode, 0)
+
+    def test_term_and_hard_death_quiesce_entire_recovery_before_post_teardown(self):
+        for forced in (False, True):
+            with self.subTest(forced=forced):
+                if forced:
+                    self.current.unlink()
+                    self.current.symlink_to(self.old, target_is_directory=True)
+                old_id = ("d" if forced else "a") * 32
+                new_id = ("e" if forced else "b") * 32
+                pinning.record("codex", old_id, str(self.old))
+                state = json.loads(self.fixture.state.read_text())
+                state.update({"broker_failure": 0, "defer_delete": True, "deferred_once": False})
+                self.fixture.state.write_text(json.dumps(state))
+                runtime = self.fixture.root / "plus-runner-codex"
+                runtime.mkdir(exist_ok=True)
+                (runtime / "runner-id").write_text("42\n")
+                (self.fixture.root / "unregister-active").unlink(missing_ok=True)
+                (self.fixture.root / "unregister-release").unlink(missing_ok=True)
+                self.swap()
+                state.update({"managed_context": True})
+                self.fixture.state.write_text(json.dumps(state))
+                env = {**self.fixture.env, "INVOCATION_ID": new_id}
+                process = subprocess.Popen(["bash", str(self.current / "slot.sh"), "codex"], env=env,
+                                           stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                self.addCleanup(self.fixture.stop_process, process)
+                (self.fixture.root / "slot-pid").write_text(str(process.pid))
+                deadline = time.monotonic() + 15
+                while not (self.fixture.root / "unregister-active").exists():
+                    self.assertLess(time.monotonic(), deadline)
+                    time.sleep(0.02)
+                self.assertEqual(json.loads(pinning.journal("codex", new_id).read_text())["release"], self.old.name)
+                cutoff = len(self.fixture.commands())
+                process.send_signal(signal.SIGKILL if forced else signal.SIGTERM)
+                process.wait(timeout=15)
+                self.assertTrue(pinning.journal("codex", old_id).exists())
+                self.assertFalse(any(c[0] == "sudo" and c[-1] == "create" for c in self.fixture.commands()[cutoff:]))
+                (self.fixture.root / "unregister-release").touch()
+                result = self.post({**env, "TEST_POST_STOP": "yes"})
+                self.assertEqual(result.returncode, 0, result.stderr)
+                process.communicate(timeout=15)
+                self.assertTrue(pinning.journal("codex", old_id).exists())
+                self.assertFalse(pinning.journal("codex", new_id).exists())
+
+    def test_recovery_unit_wrong_owner_cannot_stop_sibling(self):
+        unit = "plus-runner-codex-recovery-" + lifecycle.INVOCATION + ".service"
+        output = "Id=" + unit + "\nLoadState=loaded\nActiveState=active\nBindsTo=plus-runner@codex-2.service\nAfter=plus-runner@codex-2.service\nControlGroup=\n"
+        with patch.object(pinning.subprocess, "run", return_value=subprocess.CompletedProcess([], 0, stdout=output)) as run:
+            with self.assertRaises(ValueError):
+                pinning.quiesce_recovery("codex", lifecycle.INVOCATION)
+            self.assertEqual(run.call_count, 1)
+
+    def test_failed_startup_recovery_retains_old_and_new_bindings_until_success(self):
+        old_id, new_id = "a" * 32, "b" * 32
+        pinning.record("codex", old_id, str(self.old))
+        pinning.record("codex", new_id, str(self.new))
+        current = pinning.journal("codex", new_id)
+        self.assertEqual(json.loads(current.read_text())["release"], self.old.name)
+        with patch.object(pinning.subprocess, "run", return_value=subprocess.CompletedProcess([], 7)) as run:
+            with self.assertRaises(SystemExit) as failure:
+                pinning.recover("codex", new_id, str(self.new))
+            self.assertEqual(failure.exception.code, 7)
+            self.assertEqual(run.call_args.args[0][1], str(self.old / "stop-slot.sh"))
+        self.assertTrue(pinning.journal("codex", old_id).exists())
+        self.assertEqual(json.loads(current.read_text())["release"], self.old.name)
+        with patch.object(pinning.subprocess, "run", return_value=subprocess.CompletedProcess([], 0)):
+            pinning.recover("codex", new_id, str(self.new))
+        self.assertFalse(pinning.journal("codex", old_id).exists())
+        self.assertEqual(json.loads(current.read_text())["release"], self.new.name)
+
+    def test_recovery_inventory_is_bounded_before_any_helper_is_started(self):
+        for number in range(33):
+            pinning.record("codex", f"{number:032x}", str(self.old))
+        with patch.object(pinning.subprocess, "run") as run, self.assertRaisesRegex(ValueError, "Too many retained invocation records"):
+            pinning.record("codex", "f" * 32, str(self.new))
+        run.assert_not_called()
+
+    def test_death_before_new_binding_uses_retained_old_release_not_current_or_legacy(self):
+        pinning.record("codex", "a" * 32, str(self.old))
+        self.swap()
+        (self.base / "stop-slot.sh").write_text("legacy helper")
+        helper, _ = pinning.selected_stop("codex", "b" * 32)
+        self.assertEqual(helper, self.old / "stop-slot.sh")
+        self.assertTrue(pinning.journal("codex", "a" * 32).exists())
 
 
 if __name__ == "__main__":

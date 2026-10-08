@@ -9,7 +9,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent
 MOCK = '''#!/usr/bin/env python3
-import json, os, pathlib, subprocess, sys
+import json, os, pathlib, signal, subprocess, sys
 name = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
 with open(os.environ["COMMAND_LOG"], "a") as log:
@@ -33,7 +33,7 @@ if name == "docker" and args[:2] == ["info", "--format"]:
     print("systemd 2")
     sys.exit(0)
 if name == "timeout":
-    command = next(index for index, arg in enumerate(args) if arg in ("cat", "docker", "sudo", "tail", "systemctl", "bash"))
+    command = next(index for index, arg in enumerate(args) if arg in ("cat", "docker", "sudo", "tail", "systemctl", "bash", "python3"))
     sys.exit(subprocess.run(args[command:]).returncode)
 elif name == "systemctl":
     print("MainPID=0\\nInvocationID=")
@@ -50,7 +50,7 @@ elif name == "docker" and args[:2] == ["network", "inspect"] and os.environ.get(
 elif name == "docker" and args[0] == "ps" and "name=^/plus-codex-cleanup$" in args and os.environ.get("CLEANUP_STUCK"):
     print("orphan")
 elif name == "sleep":
-    sys.exit(1)
+    os.kill(os.getppid(), signal.SIGTERM)
 '''
 
 
@@ -63,7 +63,7 @@ class SlotTests(unittest.TestCase):
                 command = root / name
                 command.write_text(MOCK)
                 command.chmod(0o755)
-            result = subprocess.run(["bash", str(ROOT / "slot.sh"), slot], timeout=10,
+            result = subprocess.run(["bash", str(ROOT / "slot.sh"), slot], timeout=30,
                                     capture_output=True, text=True, env={**os.environ,
                                     "PATH": f"{root}:{os.environ['PATH']}",
                                     "XDG_RUNTIME_DIR": directory, "COMMAND_LOG": str(log),

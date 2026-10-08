@@ -19,7 +19,7 @@ state = json.loads(state_path.read_text())
 with open(os.environ["COMMAND_LOG"], "a") as log:
     log.write(json.dumps([name, *args]) + "\\n")
 if name == "timeout":
-    command = next(index for index, arg in enumerate(args) if arg in ("docker", "sudo", "tail", "systemctl", "bash"))
+    command = next(index for index, arg in enumerate(args) if arg in ("docker", "sudo", "tail", "systemctl", "bash", "python3"))
     sys.exit(subprocess.run(args[command:]).returncode)
 if name == "tail":
     pid = int(next(arg.split("=", 1)[1] for arg in args if arg.startswith("--pid=")))

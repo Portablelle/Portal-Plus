@@ -36,7 +36,6 @@ if $add_codex; then
   sudo -u gh-runner env HOME=/home/gh-runner XDG_RUNTIME_DIR=/run/user/1001 \
     DOCKER_HOST=unix:///run/user/1001/docker.sock PATH=/home/gh-runner/bin:/usr/bin:/bin \
     docker image inspect codex-runner:latest >/dev/null
-  bash ./provision-codex-workspace.sh "${slots[0]}"
 fi
 # Required by Docker bridge inter-container isolation; persist across reboots.
 sudo modprobe br_netfilter
@@ -137,6 +136,11 @@ sudo -u gh-runner env HOME=/home/gh-runner XDG_RUNTIME_DIR=/run/user/1001 \
     cp ~/plus-runner/current/*.service ~/plus-runner/current/*.timer ~/plus-runner/current/*.slice ~/.config/systemd/user/
     systemctl --user daemon-reload
     timeout --kill-after=2 25 bash ~/plus-runner/current/verify-budget.sh
+  '
+if $add_codex; then bash ./provision-codex-workspace.sh "${slots[0]}"; fi
+sudo -u gh-runner env HOME=/home/gh-runner XDG_RUNTIME_DIR=/run/user/1001 \
+  DOCKER_HOST=unix:///run/user/1001/docker.sock PATH=/home/gh-runner/bin:/usr/bin:/bin bash -c '
+    set -euo pipefail
     units=()
     for slot in "$@"; do units+=("plus-runner@$slot"); done
     systemctl --user enable "${units[@]}" plus-runner-image.timer

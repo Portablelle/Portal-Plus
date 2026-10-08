@@ -195,8 +195,12 @@ scripts only after staged budget/placement verification succeeds. The complete
 bundle is retained in `~/plus-runner/releases/` and published through one atomic
 `~/plus-runner/current` symlink replacement. New slots pin the physical release
 directory for every helper they subsequently load. Existing unversioned
-top-level scripts are left untouched, so active legacy Bash readers and their
+shell helpers are left untouched, so active legacy Bash readers and their
 helpers keep the original files rather than seeing a truncated/mixed revision.
+The stable top-level `post-stop.py` dispatcher is atomically refreshed after
+validation; its validated legacy fallback preserves unnumbered teardown during
+migration, while numbered instances use the validated current release when no
+pre-admission invocation record exists.
 Failed probe validation leaves live shared cleanup/slot helpers untouched.
 The live root broker and sudoers rule are also published only after successful
 placement and JIT permission preflight; the latter uses a root-owned private
@@ -271,6 +275,21 @@ The selected physical release is atomically recorded with the instance and
 InvocationID before job admission. A stable post-stop dispatcher validates that
 binding and invokes the same release's stop helper even if `current` changes.
 Failed revocation retains both the runner ID and invocation record for retry;
+on restart, the new invocation is first bound to the retained old release and
+recovers its teardown before any job admission. Only proven cleanup success
+clears obsolete same-instance records and switches the binding to the new
+release. Failed recovery retains both bindings and never touches siblings;
+inventories over 32 retained records require administrative recovery.
+Recovery runs in an invocation-named transient user service bound to and ordered
+after the verified runner unit, with whole-cgroup SIGKILL and a one-second stop
+limit. TERM stops that owned service with a five-second client deadline; parent
+hard death also requests its stop through BindsTo. Post-stop never relies on
+dependency ordering: it verifies the unit identity/association, explicitly stops
+it, and proves inactive state plus an empty/absent owned cgroup before invoking
+retained teardown. Three two-second controller calls bound this verification.
+Its Docker/API client descendants cannot remain behind the verified boundary. Docker
+containers are separately reaped by the pinned stop helper as before. Recovery
+has a 160-second runtime ceiling and does not reserve job capacity.
 an absent record before admission or for a legacy service uses only validated
 legacy/current fallback paths. No arbitrary source path can be dispatched.
 No completion
@@ -290,7 +309,10 @@ budget to 191 seconds. Bash can defer TERM until an already-running foreground
 client returns: Codex Docker info/network/remove/create and broker deletion
 clients are bounded to 35 seconds plus two-second forced-kill grace. Including
 this deferred 37-second client gives a conservative complete bound of 228
-seconds (37 + 37 + 7 + 147). Asynchronous job attachment is not timed out; EXIT
+seconds (37 + 37 + 7 + 147). The additional six-second recovery-unit verification
+gives a conservative 234-second bound, still below 240. Recovery-active startup
+has no admitted JIT identity or emergency revocation; its separate bounded
+scope-stop/reap path is shorter. Asynchronous job attachment is not timed out; EXIT
 kills/reaps only that owned client. A failed emergency call logs only the
 nonsecret ID for administrative cleanup; no job is admitted. The 240-second limit
 retains headroom for local filesystem and process overhead. Cleanup has bounded

@@ -16,7 +16,7 @@ class ContainmentTests(unittest.TestCase):
 
     def test_idle_legacy_process_is_rejected_even_during_container_inventory_gap(self):
         with patch.object(Path, "read_bytes", return_value=b"bash\0/home/gh-runner/plus-runner/slot.sh\0codex\0"):
-            with self.assertRaises(ValueError):
+            with self.assertRaises(containment.LegacyMigrationRequired):
                 containment.verify_units(self.units("plus-runner@codex.service"))
 
     def test_current_and_pinned_release_entrypoints_are_instance_scoped(self):
@@ -35,8 +35,15 @@ class ContainmentTests(unittest.TestCase):
 
     def test_legacy_container_is_rejected_even_if_stopped(self):
         for running in (False, True):
-            with self.subTest(running=running), self.assertRaises(ValueError):
+            with self.subTest(running=running), self.assertRaises(containment.LegacyMigrationRequired):
                 containment.verify_container(["/plus-codex", "", "a" * 64, running])
+
+    def test_main_distinguishes_legacy_migration_from_generic_verification_failure(self):
+        for error, marker in ((containment.LegacyMigrationRequired(), "PLUS_LEGACY_MIGRATION_REQUIRED"),
+                              (ValueError(), "PLUS_CONTAINMENT_NOT_VERIFIED")):
+            with self.subTest(marker=marker), patch.object(containment, "command", side_effect=error):
+                with self.assertRaisesRegex(SystemExit, marker):
+                    containment.main()
 
     def test_well_formed_partial_unit_inventory_hits_completeness_check(self):
         output = "\n\n".join(self.units().split("\n\n")[:-1])

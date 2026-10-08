@@ -32,7 +32,11 @@ env_file=
 journal_file=
 identity_pending=false
 managed_codex=false
+managed_service=false
 admission_locked=false
+recovery_pid=
+recovery_unit=
+binding_recorded=false
 release_admission() {
   if $admission_locked; then
     flock -u 8 || true
@@ -55,6 +59,11 @@ unregister() {
 }
 cleanup() {
   release_admission
+  if [[ -n $recovery_pid ]]; then
+    timeout --kill-after=2 5 systemctl --user stop "$recovery_unit" >/dev/null 2>&1 || true
+    kill -KILL "$recovery_pid" >/dev/null 2>&1 || true
+    if [[ $family != codex ]]; then return; fi
+  fi
   [[ -z "$env_file" ]] || rm -f "$env_file"
   if [[ $family == codex ]]; then
     local pid
@@ -71,7 +80,11 @@ cleanup() {
       echo "JIT_JOURNAL_RECOVERY_FAILED: runner $runner_id could not be revoked; no job was admitted; administrative cleanup may be needed." >&2
     fi
     if ! $managed_codex; then
-      bash "$script_dir/stop-slot.sh" "$slot" || true
+      if $binding_recorded; then
+        python3 "$script_dir/invocation-release.py" stop "$slot" || true
+      else
+        bash "$script_dir/stop-slot.sh" "$slot" || true
+      fi
     fi
     return
   fi
@@ -81,7 +94,7 @@ cleanup() {
 }
 trap 'exit 0' TERM INT
 trap cleanup EXIT
-if [[ $family == codex && ${INVOCATION_ID:-} =~ ^[0-9a-fA-F]{32}$ ]]; then
+if [[ ${INVOCATION_ID:-} =~ ^[0-9a-fA-F]{32}$ ]]; then
   if unit_state=$(timeout --kill-after=2 2 systemctl --user show "plus-runner@$slot.service" --property=MainPID --property=InvocationID); then
     unit_pid=
     unit_invocation=
@@ -92,15 +105,35 @@ if [[ $family == codex && ${INVOCATION_ID:-} =~ ^[0-9a-fA-F]{32}$ ]]; then
       esac
     done <<<"$unit_state"
     if [[ $unit_pid == "$$" && $unit_invocation == "$INVOCATION_ID" ]]; then
-      managed_codex=true
+      managed_service=true
+      if [[ $family == codex ]]; then managed_codex=true; fi
     fi
   fi
 fi
 if [[ $script_dir == /home/gh-runner/plus-runner/releases/* && -n ${INVOCATION_ID:-} ]]; then
-  python3 "$script_dir/invocation-release.py" record "$slot" "${INVOCATION_ID:-}" "$script_dir" || {
+  timeout --kill-after=2 5 python3 "$script_dir/invocation-release.py" record "$slot" "${INVOCATION_ID:-}" "$script_dir" || {
     echo "INVOCATION_RELEASE_NOT_VERIFIED: no job admitted." >&2
     exit 1
   }
+  binding_recorded=true
+  if ! $managed_service; then
+    echo "INVOCATION_OWNER_NOT_VERIFIED: no job admitted." >&2
+    exit 1
+  fi
+  recovery_unit="plus-runner-$slot-recovery-$INVOCATION_ID.service"
+  systemd-run --user --quiet --wait --collect --unit="$recovery_unit" \
+    --property=Type=exec --property=KillMode=control-group --property=KillSignal=SIGKILL \
+    --property=TimeoutStopSec=1 --property=RuntimeMaxSec=160 \
+    --property="BindsTo=plus-runner@$slot.service" --property="After=plus-runner@$slot.service" \
+    --setenv="HOME=$HOME" --setenv="XDG_RUNTIME_DIR=$XDG_RUNTIME_DIR" \
+    --setenv="DOCKER_HOST=${DOCKER_HOST:-unix://$XDG_RUNTIME_DIR/docker.sock}" --setenv="PATH=$PATH" \
+    /usr/bin/python3 "$script_dir/invocation-release.py" recover "$slot" "$INVOCATION_ID" "$script_dir" &
+  recovery_pid=$!
+  if ! wait "$recovery_pid"; then
+    echo "INVOCATION_RELEASE_RECOVERY_FAILED: no job admitted." >&2
+    exit 1
+  fi
+  recovery_pid=
 fi
 "${docker_client[@]}" rm -f "$container" >/dev/null 2>&1 || true
 retry_delay=15

@@ -167,7 +167,7 @@ else:
         self.assertIn('sudo mv -fT "$temporary" "$destination"', source)
         self.assertNotIn('sudo install -o gh-runner -g gh-runner -m 644 "$file"', source)
 
-    def install_fixture(self, bad_placement=False, active_slice=False, bad_limit=False, legacy_container=False):
+    def install_fixture(self, bad_placement=False, active_slice=False, bad_limit=False, legacy_container=False, slot="portal-2"):
         sudo = '''#!/usr/bin/env python3
 import json, os, pathlib, shutil, subprocess, sys, tempfile
 args = sys.argv[1:]
@@ -216,6 +216,9 @@ elif args[0] not in ("modprobe", "sysctl", "loginctl", "visudo"):
             root = Path(directory)
             checkout = root / "source"
             shutil.copytree(ROOT, checkout)
+            (checkout / "provision-codex-workspace.sh").write_text('''#!/usr/bin/env bash
+python3 -c 'import json,os,sys; open(os.environ["COMMAND_LOG"],"a").write(json.dumps(["provision",sys.argv[1]])+"\\n")' "$1"
+''')
             binaries = root / "bin"
             binaries.mkdir()
             for relative in ("home", "sbin", "run", "tmp", "etc/modules-load.d", "etc/sysctl.d", "etc/sudoers.d"):
@@ -242,7 +245,7 @@ elif args[0] not in ("modprobe", "sysctl", "loginctl", "visudo"):
             (binaries / "sudo").write_text(sudo)
             (binaries / "sudo").chmod(0o755)
             log = root / "commands.jsonl"
-            result = subprocess.run(["bash", str(script), "--add-slot", "portal-2"],
+            result = subprocess.run(["bash", str(script), "--add-slot", slot],
                                     env={**os.environ, "PATH": f"{binaries}:{os.environ['PATH']}",
                                          "FIXTURE_ROOT": directory, "COMMAND_LOG": str(log), "PLUS_CI_BUDGET_APPROVED": "yes",
                                          "BAD_PLACEMENT": "1" if bad_placement else "",
@@ -304,6 +307,18 @@ elif args[0] not in ("modprobe", "sysctl", "loginctl", "visudo"):
         self.assertEqual(stages, [])
         self.assertFalse(any(c[:3] == ["systemctl", "--user", "enable"] for c in commands))
         self.assertFalse(any(c[:3] == ["systemctl", "--user", "start"] and c[-1] != "plusci.slice" for c in commands))
+
+    def test_codex_scratch_is_provisioned_only_after_containment_guard_passes(self):
+        result, commands, _, _, _, _, _, _ = self.install_fixture(legacy_container=True, slot="codex-2")
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(any(c[0] == "provision" for c in commands))
+        result, commands, _, _, _, _, _, _ = self.install_fixture(slot="codex-2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        provision = next(i for i, c in enumerate(commands) if c == ["provision", "codex-2"])
+        guard = max(i for i, c in enumerate(commands) if c[:2] == ["docker", "ps"] and "--format" in c)
+        enable = next(i for i, c in enumerate(commands) if c[:3] == ["systemctl", "--user", "enable"])
+        self.assertLess(guard, provision)
+        self.assertLess(provision, enable)
 
 
 if __name__ == "__main__":
