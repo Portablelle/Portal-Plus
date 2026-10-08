@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import shutil
 import tempfile
+import tarfile
 import unittest
 from test_codex_contract import CodexDeliveryFixture
 
@@ -54,6 +55,29 @@ class CodexCompositionTests(CodexDeliveryFixture, unittest.TestCase):
         self.assertEqual(record['codexVersion'], '0.0.4')
         self.assertEqual((portal / 'src/codex-payload.js').read_bytes(),
                          (self.source / 'src/codex-payload.js').read_bytes())
+
+    def test_checked_in_codex_delivery_composes_end_to_end(self):
+        real = ROOT / 'vps-site/apps/codex'
+        manifest = json.loads((real / 'manifest.json').read_text())
+        shutil.rmtree(self.base)
+        for name in ['manifest.json', 'LICENSE', 'NOTICE.md', 'codex-source.tar.gz',
+                     *(entry['path'] for entry in manifest['files'])]:
+            target = self.base / name
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(real / name, target)
+        shutil.copyfile(ROOT / 'vps-site/src/codex-payload.js', self.source / 'src/codex-payload.js')
+        with tarfile.open(self.base / 'codex-source.tar.gz', 'r:gz') as archive:
+            self.commit = archive.pax_headers['comment']
+        self.refresh()
+        portal = self.public_portal()
+        compose.compose(portal, self.source, self.commit)
+        validator.verify(portal)
+        record = json.loads((portal / 'manifest.json').read_text())
+        self.assertEqual(record['codexCommit'], self.commit)
+        self.assertEqual(record['codexVersion'], '0.0.4')
+        self.assertEqual(json.loads((portal / 'apps/codex/manifest.json').read_text()), manifest)
+        self.assertEqual((portal / 'src/codex-payload.js').read_bytes(),
+                         (ROOT / 'vps-site/src/codex-payload.js').read_bytes())
 
     def test_wrong_commit_and_unlisted_files_are_rejected(self):
         with self.assertRaisesRegex(ValueError, 'does not match main'):

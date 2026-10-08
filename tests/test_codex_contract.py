@@ -101,24 +101,25 @@ class CodexDeliveryFixture:
 
 
 class CodexContractTests(CodexDeliveryFixture, unittest.TestCase):
-    def test_header_limits_cover_private_and_public_decoders(self):
+    def test_header_guards_cover_each_decoder(self):
         path = self.base / 'codex-source.tar.gz'
+        decoders = ['fromtarfile']
+        if hasattr(tarfile.TarInfo, '_fromtarfile'):
+            decoders.append('_fromtarfile')
         for case in ('Solaris oversized', 'Solaris consecutive', 'GNU sparse',
                      'GNU sparse 0.0', 'GNU sparse 0.1', 'GNU sparse 1.0'):
-            with self.subTest(case=case):
-                write_parser_archive(path, case, leading_member=True)
-                with compose.source_archive(path) as archive:
-                    self.assertEqual(archive.firstmember.name, 'leading')
-                    decoder = getattr(archive.tarinfo, '_fromtarfile', archive.tarinfo.fromtarfile)
-                    with ExitStack() as stack:
-                        for method in ('_proc_sparse', '_proc_gnusparse_00', '_proc_gnusparse_01', '_proc_gnusparse_10'):
-                            stack.enter_context(patch.object(tarfile.TarInfo, method,
-                                                             side_effect=AssertionError('Sparse map parser was entered')))
-                        if hasattr(archive.tarinfo, '_fromtarfile'):
-                            stack.enter_context(patch.object(tarfile.TarInfo, 'frombuf',
-                                                             side_effect=AssertionError('Public header decoder was used')))
+            for decoder in decoders:
+                with self.subTest(case=case, decoder=decoder):
+                    write_parser_archive(path, case, leading_member=True)
+                    with compose.source_archive(path) as archive, ExitStack() as stack:
+                        self.assertEqual(archive.firstmember.name, 'leading')
+                        sentinels = [stack.enter_context(patch.object(
+                            tarfile.TarInfo, method, side_effect=AssertionError('Base sparse parser was entered')))
+                            for method in ('_proc_sparse', '_proc_gnusparse_00', '_proc_gnusparse_01', '_proc_gnusparse_10')]
                         with self.assertRaisesRegex(ValueError, 'exceeds limits'):
-                            decoder(archive)
+                            getattr(archive.tarinfo, decoder)(archive)
+                        for sentinel in sentinels:
+                            sentinel.assert_not_called()
 
     def test_solaris_metadata_and_sparse_maps_are_rejected_before_parsing(self):
         path = self.base / 'codex-source.tar.gz'
