@@ -44,8 +44,12 @@ class ReleaseTests(unittest.TestCase):
             prefix = 'apps/' + package + '/'
             binary = self.write(prefix + 'runtime.bin', b'runtime')
             entry = dict(path='runtime.bin', size=7, sha256=portal.digest(binary))
-            manifest = self.write(prefix + 'manifest.json', json.dumps(dict(files=[entry])).encode())
-            self.write('src/' + installer, ("const " + constant + " = '" + portal.digest(manifest) + "';").encode())
+            data = dict(files=[entry])
+            version = "const VERSION='0.16.24-botty4';" if package == 'rtorrent' else ''
+            if package == 'rtorrent':
+                data['id'] = '0.16.24-botty4'
+            manifest = self.write(prefix + 'manifest.json', json.dumps(data).encode())
+            self.write('src/' + installer, ("const " + constant + " = '" + portal.digest(manifest) + "';\n" + version).encode())
             for name in portal.PACKAGE_NOTICES[package]:
                 self.write(prefix + name)
         self.refresh()
@@ -74,12 +78,47 @@ class ReleaseTests(unittest.TestCase):
         self.assertEqual({p.relative_to(output).as_posix() for p in output.rglob('*') if p.is_file()}, expected)
         self.assertFalse(any(p.read_bytes() == b'private' for p in output.rglob('*') if p.is_file()))
 
+    def test_rtorrent_version_mismatch_blocks_export_even_with_valid_hashes(self):
+        code = (self.root / 'src/rtorrent.js').read_text()
+        self.write('src/rtorrent.js', code.replace('botty4', 'botty5').encode())
+        self.refresh()
+        output = self.root.parent / 'export'
+        result = subprocess.run([sys.executable, str(ROOT / 'scripts/portal-manifest.py'),
+                                 '--root', str(self.root), '--output', str(output)],
+                                capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(b'Installer version mismatch: rtorrent', result.stderr)
+        self.assertFalse(output.exists())
+
     def test_export_refuses_existing_destination(self):
         result = subprocess.run([sys.executable, str(ROOT / 'scripts/portal-manifest.py'),
                                  '--root', str(self.root), '--output', str(self.root.parent)],
                                 capture_output=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(b'destination must be new', result.stderr)
+
+    def test_rtorrent_comment_or_string_cannot_mask_version_mismatch(self):
+        declaration = "const VERSION='0.16.24-botty4';"
+        prefixes = ['// ' + declaration + '\n', '/*\n' + declaration + '\n*/\n',
+                    'const text="' + declaration + '";\n',
+                    'const text=`\n' + declaration + '\n`;\n']
+        original = (self.root / 'src/rtorrent.js').read_text()
+        for prefix in prefixes:
+            with self.subTest(prefix=prefix):
+                self.write('src/rtorrent.js', (prefix + original.replace('botty4', 'botty5')).encode())
+                self.refresh()
+                with self.assertRaisesRegex(ValueError, 'installer 0.16.24-botty5, package 0.16.24-botty4'):
+                    portal.verify(self.root)
+
+    def test_rtorrent_version_diagnostics_are_distinct(self):
+        for data, message in [({}, 'Missing or non-string'), ({'id': 5}, 'Missing or non-string'),
+                              ({'id': '../state'}, 'Invalid rTorrent version format')]:
+            with self.subTest(data=data), self.assertRaisesRegex(ValueError, message):
+                portal.rtorrent_version(data)
+        for code, message in [("// const VERSION='0.16.24-botty4';", 'Missing rTorrent installer'),
+                              ("const VERSION='a';\nconst VERSION='b';", 'Multiple rTorrent installer')]:
+            with self.subTest(code=code), self.assertRaisesRegex(ValueError, message):
+                portal.rtorrent_version_pin(code)
 
     def test_stale_manifest_rejected(self):
         self.write('index.html', b'changed')
