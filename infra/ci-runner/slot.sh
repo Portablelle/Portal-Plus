@@ -8,9 +8,10 @@ container=plus-$slot
 network=plus-ci-$slot
 image=plus-runner:latest
 docker_client=(docker)
+codex_client_timeout=35
 home_mount=(--tmpfs /home/runner:rw,exec,nosuid,nodev,size=4g,uid=1001,gid=1001,mode=0700)
 if [[ $slot == codex ]]; then
-  docker_client=(timeout --kill-after=2 35 docker)
+  docker_client=(timeout --kill-after=2 "$codex_client_timeout" docker)
   image=codex-runner:latest
   workspace=/home/gh-runner/codex-workspace
   mountpoint -q "$workspace" && [[ $(findmnt -n -o FSTYPE --target "$workspace") == ext4 ]] || {
@@ -37,7 +38,7 @@ release_admission() {
 unregister() {
   if [[ -n "$runner_id" ]]; then
     local command=(sudo -n /usr/local/sbin/plus-runner-api "$slot" delete "$runner_id")
-    if [[ $slot == codex ]]; then command=(timeout --kill-after=2 35 "${command[@]}"); fi
+    if [[ $slot == codex ]]; then command=(timeout --kill-after=2 "$codex_client_timeout" "${command[@]}"); fi
     if ! "${command[@]}"; then
       echo "JIT_CLEANUP_FAILED: preserving runner $runner_id for retry." >&2
       return 1

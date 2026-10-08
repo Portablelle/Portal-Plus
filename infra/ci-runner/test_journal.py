@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import json
+import re
 from pathlib import Path
 import signal
 import subprocess
@@ -61,6 +62,7 @@ class JournalTests(unittest.TestCase):
         self.assertEqual((self.fixture.root / "plus-runner-codex" / "runner-id").read_text(), "partial-invalid")
         process.send_signal(signal.SIGTERM)
         _, error = process.communicate(timeout=10)
+        self.assertEqual(process.returncode, 0, error)
         self.assertIn("JIT_JOURNAL_RECOVERY_FAILED", error)
         self.assertIn("runner 42", error)
         self.assertEqual(self.fixture.commands().count(delete), 3)
@@ -70,7 +72,8 @@ class JournalTests(unittest.TestCase):
         process, env = self.start_failed_checkpoint(failure=7, journal="published")
         cutoff = len(self.fixture.commands())
         process.send_signal(signal.SIGTERM)
-        process.communicate(timeout=10)
+        _, error = process.communicate(timeout=10)
+        self.assertEqual(process.returncode, 0, error)
         result = self.fixture.post(env)
         self.assertEqual(result.returncode, 7, result.stderr)
         commands = self.fixture.commands()[cutoff:]
@@ -93,7 +96,8 @@ class JournalTests(unittest.TestCase):
         time.sleep(0.05)
         self.assertIsNone(process.poll(), "Bash must wait for the foreground unregister before EXIT")
         (self.fixture.root / "unregister-release").touch()
-        process.communicate(timeout=10)
+        _, error = process.communicate(timeout=10)
+        self.assertEqual(process.returncode, 0, error)
         result = self.fixture.post(env)
         self.assertEqual(result.returncode, 7, result.stderr)
         commands = self.fixture.commands()[cutoff:]
@@ -102,9 +106,13 @@ class JournalTests(unittest.TestCase):
         budget = sum(float(command[2]) + 2 for command in timed)
         budget += sum(float(command[2]) for command in commands if command[:2] == ["flock", "-w"])
         self.assertEqual(budget, 221)
-        self.assertEqual(37 + 37 + 7 + 147, 228)
-        self.assertLessEqual(budget, 228)
-        self.assertLess(228, 240)
+        client = re.search(r'timeout --kill-after=(\d+) (\d+) tail', (ROOT / 'slot.sh').read_text())
+        self.assertIsNotNone(client, 'owned-client deadline must remain explicitly bounded')
+        complete_budget = budget + sum(float(value) for value in client.groups())
+        allowance = re.search(r'TimeoutStopSec=(\d+)',
+                              (ROOT / 'plus-runner@codex.service.d/timeout.conf').read_text())
+        self.assertIsNotNone(allowance)
+        self.assertLess(complete_budget, int(allowance.group(1)))
         self.assertFalse(any(command[:2] == ["docker", "create"] for command in commands))
 
 
