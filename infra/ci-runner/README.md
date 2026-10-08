@@ -166,7 +166,7 @@ restart after Docker failures. Each normal exit revokes any unused JIT
 identity; failed deletions retain their ID and are retried before a new
 registration. `ExecStopPost=stop-slot.sh` also stops/removes the container and
 revokes the identity after an unexpected/forced slot exit. The additive installer
-installs a Codex-only `TimeoutStopSec=180` drop-in; Botty/Portal retain the template
+installs a Codex-only `TimeoutStopSec=240` drop-in; Botty/Portal retain the template
 default of 90 seconds. Startup verifies the Codex unit MainPID equals the slot
 PID and its InvocationID matches the inherited ID using one local query with a
 two-second deadline plus two-second forced-kill grace. The result is retained
@@ -176,12 +176,24 @@ terminates/reaps its own background clients or retry timers (at most seven
 seconds) and removes the transient environment file. `ExecStopPost` exclusively
 owns full teardown, including after a forced main-process kill. No completion
 marker can suppress recovery; manual or unverifiable-context exits call the same
-stop helper directly. The complete TERM/EXIT/post-stop budget is 154 seconds,
+stop helper directly. The normal TERM/EXIT/post-stop budget is 154 seconds,
 with exactly one 147-second full teardown:
 27 seconds to stop, 12 to remove, 37 for the broker (35 plus forced-kill grace),
 and 71 for workspace cleanup including lock wait, checks, and both orphan-reaping
 passes. Every timed client gets a two-second forced-kill grace, so ignoring TERM
-cannot turn a client deadline into an indefinite wait. The 180-second limit
+cannot turn a client deadline into an indefinite wait. A new Codex runner ID
+is written to a temporary host journal and atomically published before admission.
+Failed checkpointing revokes the known in-memory ID with a bounded call and
+blocks new registrations until that identity is cleared; a partial journal
+cannot override this retained ID. If EXIT occurs before a durable checkpoint,
+one additional 37-second emergency revocation can bring the complete stop
+budget to 191 seconds. Bash can defer TERM until an already-running foreground
+client returns: Codex Docker info/network/remove/create and broker deletion
+clients are bounded to 35 seconds plus two-second forced-kill grace. Including
+this deferred 37-second client gives a conservative complete bound of 228
+seconds (37 + 37 + 7 + 147). Asynchronous job attachment is not timed out; EXIT
+kills/reaps only that owned client. A failed emergency call logs only the
+nonsecret ID for administrative cleanup; no job is admitted. The 240-second limit
 retains headroom for local filesystem and process overhead. Cleanup has bounded
 timeouts, and `KillMode=mixed` cleans up remaining unit processes.
 A manual service stop/restart intentionally aborts an in-flight CI job after

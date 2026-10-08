@@ -22,10 +22,14 @@ def until(path):
             raise RuntimeError("admission fixture timed out")
         time.sleep(0.01)
 if name == "timeout":
-    command = next(index for index, arg in enumerate(args) if arg in ("docker", "sudo", "tail", "systemctl"))
+    command = next((index for index, arg in enumerate(args) if arg in ("docker", "sudo", "tail", "systemctl")), None)
+    if command is None:
+        raise RuntimeError("timeout fixture received no supported client: " + repr(args))
     sys.exit(subprocess.run(args[command:]).returncode)
 elif name == "systemctl":
     print("MainPID=0\\nInvocationID=")
+elif name == "mv":
+    pathlib.Path(args[-2]).replace(args[-1])
 elif name == "flock":
     fd = int(args[-1])
     if "-u" in args:
@@ -75,7 +79,7 @@ class AdmissionTests(unittest.TestCase):
     def invoke(self, create_failure=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for name in ("docker", "sudo", "jq", "timeout", "sleep", "mountpoint", "findmnt", "flock", "systemctl"):
+            for name in ("docker", "sudo", "jq", "timeout", "sleep", "mountpoint", "findmnt", "flock", "systemctl", "mv"):
                 command = root / name
                 command.write_text(MOCK)
                 command.chmod(0o755)

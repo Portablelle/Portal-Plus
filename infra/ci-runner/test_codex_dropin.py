@@ -47,7 +47,7 @@ class CodexDropinTests(unittest.TestCase):
                 if additive:
                     config = configparser.ConfigParser()
                     config.read(units / "plus-runner@codex.service.d" / "timeout.conf")
-                    self.assertEqual(config.getint("Service", "TimeoutStopSec"), 180)
+                    self.assertEqual(config.getint("Service", "TimeoutStopSec"), 240)
         template = configparser.ConfigParser(strict=False)
         template.read(ROOT / "plus-runner@.service")
         self.assertEqual(template.getint("Service", "TimeoutStopSec"), 90)

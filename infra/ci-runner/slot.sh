@@ -7,8 +7,10 @@ slot=$1
 container=plus-$slot
 network=plus-ci-$slot
 image=plus-runner:latest
+docker_client=(docker)
 home_mount=(--tmpfs /home/runner:rw,exec,nosuid,nodev,size=4g,uid=1001,gid=1001,mode=0700)
 if [[ $slot == codex ]]; then
+  docker_client=(timeout --kill-after=2 35 docker)
   image=codex-runner:latest
   workspace=/home/gh-runner/codex-workspace
   mountpoint -q "$workspace" && [[ $(findmnt -n -o FSTYPE --target "$workspace") == ext4 ]] || {
@@ -21,6 +23,8 @@ state="${XDG_RUNTIME_DIR:?}/plus-runner-$slot"
 mkdir -p "$state"
 runner_id=
 env_file=
+journal_file=
+identity_pending=false
 managed_codex=false
 admission_locked=false
 release_admission() {
@@ -32,11 +36,14 @@ release_admission() {
 }
 unregister() {
   if [[ -n "$runner_id" ]]; then
-    if ! sudo -n /usr/local/sbin/plus-runner-api "$slot" delete "$runner_id"; then
+    local command=(sudo -n /usr/local/sbin/plus-runner-api "$slot" delete "$runner_id")
+    if [[ $slot == codex ]]; then command=(timeout --kill-after=2 35 "${command[@]}"); fi
+    if ! "${command[@]}"; then
       echo "JIT_CLEANUP_FAILED: preserving runner $runner_id for retry." >&2
       return 1
     fi
     runner_id=
+    identity_pending=false
   fi
   rm -f "$state/runner-id"
 }
@@ -52,6 +59,10 @@ cleanup() {
       if timeout --kill-after=2 5 tail "${clients[@]/#/--pid=}" --sleep-interval=0.1 -f /dev/null >/dev/null 2>&1; then
         wait "${clients[@]}" 2>/dev/null || true
       fi
+    fi
+    [[ -z "$journal_file" ]] || rm -f "$journal_file" || true
+    if $identity_pending && ! unregister; then
+      echo "JIT_JOURNAL_RECOVERY_FAILED: runner $runner_id could not be revoked; no job was admitted; administrative cleanup may be needed." >&2
     fi
     if ! $managed_codex; then
       bash "$(dirname "$0")/stop-slot.sh" "$slot" || true
@@ -79,7 +90,7 @@ if [[ $slot == codex && ${INVOCATION_ID:-} =~ ^[0-9a-fA-F]{32}$ ]]; then
     fi
   fi
 fi
-docker rm -f "$container" >/dev/null 2>&1 || true
+"${docker_client[@]}" rm -f "$container" >/dev/null 2>&1 || true
 retry_delay=15
 backoff() {
   echo "SLOT_RETRY: retrying in $retry_delay s." >&2
@@ -87,6 +98,13 @@ backoff() {
   retry_delay=$((retry_delay < 150 ? retry_delay * 2 : 300))
 }
 while true; do
+  if $identity_pending; then
+    if ! unregister; then
+      echo "JIT_JOURNAL_RECOVERY_FAILED: retaining runner $runner_id in memory for retry; no job admitted." >&2
+      backoff
+      continue
+    fi
+  fi
   # Recover a failed deletion after service/process restart before registering again.
   if [[ -f "$state/runner-id" ]]; then
     runner_id=$(cat "$state/runner-id")
@@ -102,18 +120,18 @@ while true; do
     fi
   fi
   # Never allocate a JIT identity while the container daemon/network is unavailable.
-  if ! docker info >/dev/null 2>&1; then
+  if ! "${docker_client[@]}" info >/dev/null 2>&1; then
     echo "DOCKER_NOT_READY" >&2
     backoff
     continue
   fi
-  if ! docker network inspect "$network" >/dev/null 2>&1 &&
-      ! docker network create --opt com.docker.network.bridge.enable_icc=false "$network" >/dev/null; then
+  if ! "${docker_client[@]}" network inspect "$network" >/dev/null 2>&1 &&
+      ! "${docker_client[@]}" network create --opt com.docker.network.bridge.enable_icc=false "$network" >/dev/null; then
     echo "NETWORK_NOT_READY: could not create isolated Docker bridge $network." >&2
     backoff
     continue
   fi
-  docker rm -f "$container" >/dev/null 2>&1 || true
+  "${docker_client[@]}" rm -f "$container" >/dev/null 2>&1 || true
   if [[ $slot == codex ]] && ! bash "$(dirname "$0")/clean-codex-workspace.sh"; then
     echo "CODEX_WORKSPACE_CLEANUP_FAILED" >&2
     backoff
@@ -129,7 +147,26 @@ while true; do
     backoff
     continue
   fi
-  printf '%s\n' "$runner_id" > "$state/runner-id"
+  if [[ $slot == codex ]]; then
+    identity_pending=true
+    if ! journal_file=$(mktemp "$state/runner-id.XXXXXX") ||
+        ! printf '%s\n' "$runner_id" > "$journal_file" ||
+        ! mv -T "$journal_file" "$state/runner-id"; then
+      unset reply
+      [[ -z "$journal_file" ]] || rm -f "$journal_file" || true
+      journal_file=
+      echo "JIT_JOURNAL_FAILED: refusing job admission for runner $runner_id." >&2
+      if ! unregister; then
+        echo "JIT_JOURNAL_RECOVERY_FAILED: retaining runner $runner_id in memory for retry; no job admitted." >&2
+      fi
+      backoff
+      continue
+    fi
+    journal_file=
+    identity_pending=false
+  else
+    printf '%s\n' "$runner_id" > "$state/runner-id"
+  fi
   env_file=$(mktemp "$state/jit.XXXXXX")
   if ! jit_config=$(jq -er '.encoded_jit_config | select(type == "string" and length > 0)' <<<"$reply"); then
     unset reply
@@ -154,7 +191,7 @@ while true; do
     fi
     admission_locked=true
   fi
-  if ! docker create --name "$container" --env-file "$env_file" \
+  if ! "${docker_client[@]}" create --name "$container" --env-file "$env_file" \
     --env HOME=/home/runner --env RUNNER_MANUALLY_TRAP_SIG=1 --env AGENT_TOOLSDIRECTORY=/home/runner/_toolcache \
     --env RUNNER_TOOL_CACHE=/home/runner/_toolcache --network "$network" \
     --cpus 4 --memory 8g --memory-swap 8g --pids-limit 4096 \
@@ -181,7 +218,7 @@ while true; do
   docker start --attach "$container" &
   session_status=0
   wait $! || session_status=$?
-  docker rm -f "$container" >/dev/null 2>&1 || true
+  "${docker_client[@]}" rm -f "$container" >/dev/null 2>&1 || true
   unregister || true
   if [[ $slot == codex ]] && ! bash "$(dirname "$0")/clean-codex-workspace.sh"; then
     echo "CODEX_WORKSPACE_CLEANUP_FAILED" >&2

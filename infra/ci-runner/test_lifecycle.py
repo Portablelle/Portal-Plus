@@ -25,7 +25,7 @@ class LifecycleTests(unittest.TestCase):
         self.state = self.root / "state.json"
         self.state.write_text(json.dumps({"hold_slot": True}))
         self.log = self.root / "commands.jsonl"
-        for name in ("docker", "sudo", "jq", "timeout", "tail", "sleep", "mountpoint", "findmnt", "flock", "systemctl"):
+        for name in ("docker", "sudo", "jq", "timeout", "tail", "sleep", "mountpoint", "findmnt", "flock", "systemctl", "mv"):
             command = self.root / name
             command.write_text(MOCK)
             command.chmod(0o755)
@@ -92,20 +92,26 @@ class LifecycleTests(unittest.TestCase):
         budget = sum(float(command[2]) + 2 for command in timed)
         budget += sum(float(command[2]) for command in lifecycle if command[:2] == ["flock", "-w"])
         self.assertEqual(budget, 154)
-        self.assertLess(budget, 180)
+        self.assertLess(budget, 240)
         self.assertEqual(list(self.home.iterdir()), [])
         query = ["timeout", "--kill-after=2", "2", "systemctl", "--user", "show", "plus-runner@codex.service", "--property=MainPID", "--property=InvocationID"]
         self.assertEqual(self.commands().count(query), 1)
 
     def test_force_killed_slot_has_no_completion_state_that_can_skip_recovery(self):
         process, env = self.start()
-        (self.root / "plus-runner-codex" / "teardown-result").write_text("invalid-completion-marker")
+        (self.root / "plus-runner-codex" / "teardown-result").write_text(json.dumps({
+            "invocation_id": INVOCATION, "completed": True, "status": 0}))
+        cutoff = len(self.commands())
         process.kill()
         process.communicate(timeout=10)
         result = self.post(env)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(list(self.home.iterdir()), [])
         self.assertFalse((self.root / "plus-runner-codex" / "runner-id").exists())
+        recovery = self.commands()[cutoff:]
+        self.assertIn(["docker", "rm", "-f", "plus-codex"], recovery)
+        self.assertIn(["sudo", "-n", "/usr/local/sbin/plus-runner-api", "codex", "delete", "42"], recovery)
+        self.assertEqual(sum(command[:2] == ["docker", "run"] for command in recovery), 1)
 
     def test_manual_or_invalid_invocation_exit_owns_teardown_directly(self):
         for invocation in (None, "invalid-invocation"):

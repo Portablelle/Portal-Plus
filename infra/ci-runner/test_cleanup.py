@@ -54,9 +54,35 @@ elif name == "sudo":
         print('{"runner":{"id":42},"encoded_jit_config":"test-jit"}')
     else:
         assert args == ["-n", "/usr/local/sbin/plus-runner-api", "codex", "delete", "42"], args
+        if state.get("defer_delete") and not state.get("deferred_once"):
+            state["deferred_once"] = True
+            state_path.write_text(json.dumps(state))
+            root = pathlib.Path(os.environ["XDG_RUNTIME_DIR"])
+            (root / "unregister-active").touch()
+            deadline = time.monotonic() + 20
+            while not (root / "unregister-release").exists():
+                if time.monotonic() > deadline:
+                    raise RuntimeError("deferred unregister fixture timed out")
+                time.sleep(0.01)
         sys.exit(state.get("broker_failure", 0))
 elif name == "jq":
     print("42" if ".runner.id" in " ".join(args) else "test-jit")
+elif name == "mv":
+    destination = pathlib.Path(args[-1])
+    if state.get("journal_failure") and destination.name == "runner-id":
+        destination.write_text("42\\n" if state["journal_failure"] == "published" else "partial-invalid")
+        sys.exit(8)
+    pathlib.Path(args[-2]).replace(destination)
+elif name == "sleep" and state.get("journal_failure"):
+    retries = state.get("journal_retries", 0) + 1
+    state["journal_retries"] = retries
+    state_path.write_text(json.dumps(state))
+    if not state.get("broker_failure") or retries >= 2:
+        pathlib.Path(os.environ["XDG_RUNTIME_DIR"], "journal-waiting").touch()
+        parent = os.getppid()
+        while os.getppid() == parent:
+            time.sleep(0.01)
+    sys.exit(0)
 elif name == "docker":
     if args[0] == "stop" and args[-1] == "plus-codex" and state.get("signal_stop") and not state.get("signal_sent"):
         pid_file = pathlib.Path(os.environ["XDG_RUNTIME_DIR"]) / "stop-pid"
@@ -244,7 +270,7 @@ class CleanupTests(unittest.TestCase):
         codex = configparser.ConfigParser()
         codex.read(ROOT / "plus-runner@codex.service.d" / "timeout.conf")
         self.assertEqual(base.getint("Service", "TimeoutStopSec"), 90)
-        self.assertEqual(codex.getint("Service", "TimeoutStopSec"), 180)
+        self.assertEqual(codex.getint("Service", "TimeoutStopSec"), 240)
         self.assertLess(budget, codex.getint("Service", "TimeoutStopSec"))
         self.assertLess(27 + 12 + 37, base.getint("Service", "TimeoutStopSec"))
         stop = next(index for index, command in enumerate(commands) if command[:2] == ["docker", "stop"] and command[-1] == "plus-codex")

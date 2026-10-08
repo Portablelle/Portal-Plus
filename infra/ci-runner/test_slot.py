@@ -19,12 +19,16 @@ if name == "timeout":
     sys.exit(subprocess.run(args[command:]).returncode)
 elif name == "systemctl":
     print("MainPID=0\\nInvocationID=")
+elif name == "mv":
+    pathlib.Path(args[-2]).replace(args[-1])
 elif name == "sudo" and "create" in args:
     print('{"runner":{"id":42},"encoded_jit_config":"test-jit"}')
 elif name == "jq":
     print("42" if ".runner.id" in " ".join(args) else "test-jit")
 elif name == "findmnt":
     print("ext4")
+elif name == "docker" and args[:2] == ["network", "inspect"] and os.environ.get("NETWORK_MISSING"):
+    sys.exit(1)
 elif name == "docker" and args[0] == "ps" and "name=^/plus-codex-cleanup$" in args and os.environ.get("CLEANUP_STUCK"):
     print("orphan")
 elif name == "sleep":
@@ -33,11 +37,11 @@ elif name == "sleep":
 
 
 class SlotTests(unittest.TestCase):
-    def run_slot(self, slot, cleanup_stuck=False):
+    def run_slot(self, slot, cleanup_stuck=False, network_missing=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             log = root / "commands.jsonl"
-            for name in ("docker", "sudo", "jq", "timeout", "sleep", "mountpoint", "findmnt", "flock", "systemctl"):
+            for name in ("docker", "sudo", "jq", "timeout", "sleep", "mountpoint", "findmnt", "flock", "systemctl", "mv"):
                 command = root / name
                 command.write_text(MOCK)
                 command.chmod(0o755)
@@ -45,7 +49,8 @@ class SlotTests(unittest.TestCase):
                                     capture_output=True, text=True, env={**os.environ,
                                     "PATH": f"{root}:{os.environ['PATH']}",
                                     "XDG_RUNTIME_DIR": directory, "COMMAND_LOG": str(log),
-                                    "CLEANUP_STUCK": "1" if cleanup_stuck else ""})
+                                    "CLEANUP_STUCK": "1" if cleanup_stuck else "",
+                                    "NETWORK_MISSING": "1" if network_missing else ""})
             commands = [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
             return result, commands
 
@@ -86,6 +91,29 @@ class SlotTests(unittest.TestCase):
         _, commands = self.run_slot("codex", cleanup_stuck=True)
         self.assertFalse(any(command[0] == "sudo" and command[-1] == "create" for command in commands))
         self.assertFalse(any(command[:2] == ["docker", "create"] for command in commands))
+
+    def test_codex_foreground_docker_clients_are_bounded_but_attachment_is_not(self):
+        _, commands = self.run_slot("codex", network_missing=True)
+        commands = commands[:next(index for index, command in enumerate(commands) if command[0] == "sleep")]
+        operations = set()
+        for index, command in enumerate(commands):
+            if command[0] != "docker":
+                continue
+            foreground = command[1] in ("info", "network", "create") or (command[1] == "rm" and command[-1] == "plus-codex")
+            if foreground:
+                self.assertEqual(commands[index - 1][:4], ["timeout", "--kill-after=2", "35", "docker"])
+                operations.add(tuple(command[1:3]) if command[1] == "network" else (command[1],))
+            if command[1] == "start":
+                self.assertNotEqual(commands[index - 1][0], "timeout")
+        self.assertTrue({("info",), ("network", "inspect"), ("network", "create"), ("create",), ("rm",)}.issubset(operations))
+
+    def test_existing_slots_keep_unwrapped_foreground_docker_clients(self):
+        for slot in ("botty", "portal"):
+            with self.subTest(slot=slot):
+                _, commands = self.run_slot(slot)
+                for index, command in enumerate(commands):
+                    if command[0] == "docker" and command[1] in ("info", "network", "create"):
+                        self.assertNotEqual(commands[index - 1][0], "timeout")
 
 
 if __name__ == "__main__":
