@@ -66,6 +66,10 @@ for file in Dockerfile Dockerfile.codex build-image.sh build-codex-image.sh slot
   sudo install -o gh-runner -g gh-runner -m 644 "$file" "/home/gh-runner/plus-runner/$file"
 done
 sudo chmod 755 /home/gh-runner/plus-runner/{build-image,build-codex-image,slot,stop-slot,clean-codex-workspace}.sh
+if $add_codex; then
+  sudo install -d -o gh-runner -g gh-runner -m 755 /home/gh-runner/.config/systemd/user/plus-runner@codex.service.d
+  sudo install -o gh-runner -g gh-runner -m 644 plus-runner@codex.service.d/timeout.conf /home/gh-runner/.config/systemd/user/plus-runner@codex.service.d/timeout.conf
+fi
 sudo -u gh-runner env HOME=/home/gh-runner XDG_RUNTIME_DIR=/run/user/1001 \
   DOCKER_HOST=unix:///run/user/1001/docker.sock PATH=/home/gh-runner/bin:/usr/bin:/bin bash -c '
     set -euo pipefail

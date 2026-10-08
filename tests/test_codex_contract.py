@@ -1,4 +1,5 @@
 import copy
+from contextlib import ExitStack
 import hashlib
 import importlib.util
 import io
@@ -8,6 +9,7 @@ import subprocess
 import tempfile
 import tarfile
 import unittest
+from unittest.mock import patch
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('codex_contract', ROOT / 'scripts/compose-codex.py')
@@ -15,7 +17,34 @@ compose = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(compose)
 
 
-class CodexContractTests(unittest.TestCase):
+def write_parser_archive(path, case):
+    with tarfile.open(path, 'w:gz', format=tarfile.PAX_FORMAT) as archive:
+        if case == 'Solaris oversized':
+            raw = tarfile.TarInfo.create_pax_global_header({'comment': 'x' * 65537})
+            header = tarfile.TarInfo.frombuf(raw[:512], 'utf-8', 'strict')
+            header.type = tarfile.SOLARIS_XHDTYPE
+            archive.fileobj.write(header.tobuf() + raw[512:])
+        elif case == 'Solaris consecutive':
+            for index in range(65):
+                entry = tarfile.TarInfo(f'pax-{index}')
+                entry.type = tarfile.SOLARIS_XHDTYPE
+                archive.addfile(entry)
+        entry = tarfile.TarInfo('tiny')
+        data = b''
+        if case == 'GNU sparse':
+            entry.type = tarfile.GNUTYPE_SPARSE
+        elif case == 'GNU sparse 0.0':
+            entry.pax_headers = {'GNU.sparse.size': '0', 'GNU.sparse.offset': '0', 'GNU.sparse.numbytes': '0'}
+        elif case == 'GNU sparse 0.1':
+            entry.pax_headers = {'GNU.sparse.map': '0,0'}
+        elif case == 'GNU sparse 1.0':
+            entry.pax_headers = {'GNU.sparse.major': '1', 'GNU.sparse.minor': '0'}
+            data = b'1000000000000\n0\n0\n'
+            entry.size = len(data)
+        archive.addfile(entry, io.BytesIO(data))
+
+
+class CodexDeliveryFixture:
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.addCleanup(self.temp.cleanup)
@@ -36,7 +65,7 @@ class CodexContractTests(unittest.TestCase):
                              files=[dict(path='chunks/' + self.sha + '.bin', size=len(self.data), sha256=self.sha)])
         for name in ('LICENSE', 'NOTICE.md'):
             (self.base / name).write_bytes(b'test notice')
-        sources = {'VERSION': b'0.0.4', 'LICENSE': b'test license', 'upstream-lock.json': b'{}',
+        self.sources = sources = {'VERSION': b'0.0.4', 'LICENSE': b'test license', 'upstream-lock.json': b'{}',
                    'backend/assistant-service.c': b'test service source', 'src/main.cpp': b'test native source',
                    'tools/build-native.sh': b'test native recipe', 'tools/build-backend-linux.sh': b'test backend recipe',
                    'vendor/ps5-ai-cli/app/entry.c': b'test vendored source'}
@@ -68,6 +97,104 @@ class CodexContractTests(unittest.TestCase):
         (self.source / 'codex-release.json').write_text(json.dumps(dict(
             schema=1, commit='a' * 40, version=manifest['version'], sha256=hashes)))
 
+
+class CodexContractTests(CodexDeliveryFixture, unittest.TestCase):
+    def test_solaris_metadata_and_sparse_maps_are_rejected_before_parsing(self):
+        path = self.base / 'codex-source.tar.gz'
+        with ExitStack() as stack:
+            for method in ('_proc_sparse', '_proc_gnusparse_00', '_proc_gnusparse_01', '_proc_gnusparse_10'):
+                stack.enter_context(patch.object(tarfile.TarInfo, method,
+                                                 side_effect=AssertionError('Sparse map parser was entered')))
+            for case in ('Solaris oversized', 'Solaris consecutive', 'GNU sparse',
+                         'GNU sparse 0.0', 'GNU sparse 0.1', 'GNU sparse 1.0'):
+                with self.subTest(case=case):
+                    write_parser_archive(path, case)
+                    with self.assertRaisesRegex(ValueError, 'exceeds limits'):
+                        with compose.source_archive(path) as archive:
+                            list(archive)
+
+    def test_boolean_release_schema_is_rejected(self):
+        self.write_delivery(self.manifest)
+        record_path = self.source / 'codex-release.json'
+        record = json.loads(record_path.read_text())
+        record['schema'] = True
+        record_path.write_text(json.dumps(record))
+        with self.assertRaisesRegex(ValueError, 'does not match main'):
+            compose.verify_delivery(self.source, 'a' * 40)
+
+    def test_empty_outer_licenses_and_notices_are_rejected(self):
+        for name in ('LICENSE', 'NOTICE.md'):
+            with self.subTest(notice=name):
+                path = self.base / name
+                original = path.read_bytes()
+                path.write_bytes(b'')
+                self.write_delivery(self.manifest)
+                with self.assertRaisesRegex(ValueError, 'Empty Codex license or notice'):
+                    compose.verify_delivery(self.source, 'a' * 40)
+                path.write_bytes(original)
+
+    def test_oversized_payload_is_rejected_before_opening_it(self):
+        self.write_delivery(self.manifest)
+        path = self.source / 'src/codex-payload.js'
+        path.write_bytes(b' ' * (256 * 1024 + 1))
+        original_read = Path.open
+
+        def open_file(file, *args, **kwargs):
+            if file == path:
+                self.fail('Oversized payload was opened before checking its size')
+            return original_read(file, *args, **kwargs)
+
+        with patch.object(Path, 'open', open_file), self.assertRaisesRegex(ValueError, 'payload exceeds limit'):
+            compose.verify_delivery(self.source, 'a' * 40)
+
+    def test_source_archive_is_streamed_and_preserves_sorted_build_identity(self):
+        with tarfile.open(self.base / 'codex-source.tar.gz', 'w:gz', format=tarfile.PAX_FORMAT,
+                          pax_headers={'comment': 'a' * 40}) as archive:
+            for name, data in reversed(list(self.sources.items())):
+                entry = tarfile.TarInfo('codex-source/' + name)
+                entry.size = len(data)
+                archive.addfile(entry, io.BytesIO(data))
+        self.write_delivery(self.manifest)
+        with patch.object(tarfile.TarFile, 'getmembers', side_effect=AssertionError('Unbounded source scan')):
+            compose.verify_delivery(self.source, 'a' * 40)
+
+    def test_source_archive_rejects_member_count_size_and_metadata_bombs(self):
+        path = self.base / 'codex-source.tar.gz'
+        cases = ('member count', 'member size', 'metadata size', 'metadata chain', 'input memory', 'expanded size')
+        for case in cases:
+            with self.subTest(case=case):
+                with tarfile.open(path, 'w:gz', format=tarfile.PAX_FORMAT,
+                                  pax_headers={'comment': 'a' * 40}) as archive:
+                    if case == 'member count':
+                        for index in range(10001):
+                            archive.addfile(tarfile.TarInfo(f'codex-source/empty-{index}'))
+                    elif case == 'member size':
+                        entry = tarfile.TarInfo('codex-source/oversized')
+                        entry.size = 32 * 1024 * 1024 + 1
+                        archive.fileobj.write(entry.tobuf())
+                    elif case == 'metadata size':
+                        entry = tarfile.TarInfo('codex-source/tiny')
+                        entry.pax_headers = {'comment': 'x' * 65537}
+                        archive.addfile(entry)
+                    elif case == 'metadata chain':
+                        for index in range(65):
+                            entry = tarfile.TarInfo(f'pax-{index}')
+                            entry.type = tarfile.XHDTYPE
+                            archive.addfile(entry)
+                        archive.addfile(tarfile.TarInfo('codex-source/empty'))
+                    elif case == 'input memory':
+                        entry = tarfile.TarInfo('codex-source/src/large.cpp')
+                        entry.size = 16 * 1024 * 1024 + 1
+                        archive.addfile(entry, io.BytesIO(b'x' * entry.size))
+                    else:
+                        for index in range(5):
+                            entry = tarfile.TarInfo(f'codex-source/large-{index}')
+                            entry.size = 32 * 1024 * 1024
+                            archive.addfile(entry, io.BytesIO(b'x' * entry.size))
+                self.write_delivery(self.manifest)
+                with self.assertRaisesRegex(ValueError, 'exceeds limit|inputs exceed limit'):
+                    compose.verify_delivery(self.source, 'a' * 40)
+
     def test_server_rejects_the_same_incompatible_manifests_as_the_installer(self):
         cases = [('valid', copy.deepcopy(self.manifest), True)]
         for name, mutate in [
@@ -75,6 +202,9 @@ class CodexContractTests(unittest.TestCase):
                 ('missing required file', lambda m: m['native'].pop(0)),
                 ('duplicate path', lambda m: m['native'].append(m['native'][0])),
                 ('traversal', lambda m: m['native'].append(dict(m['native'][0], path='release/../auth.json'))),
+                ('conflicting file and directory', lambda m: m['native'].extend([
+                    dict(m['native'][0], path='release/licenses'),
+                    dict(m['native'][0], path='release/licenses/notice.txt')])),
                 ('missing model', lambda m: m['native'].pop()),
                 ('second model', lambda m: m['native'].append(dict(m['native'][-1], path='assets/ggml-base.bin'))),
                 ('too many native files', lambda m: m['native'].extend(dict(m['native'][0], path=f'release/notice-{i}.txt') for i in range(129))),

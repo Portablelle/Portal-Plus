@@ -3,8 +3,8 @@ import json
 from pathlib import Path
 import shutil
 import tempfile
-import tarfile
 import unittest
+from test_codex_contract import CodexDeliveryFixture
 
 ROOT = Path(__file__).resolve().parents[1]
 spec = importlib.util.spec_from_file_location('compose_codex', ROOT / 'scripts/compose-codex.py')
@@ -15,18 +15,27 @@ validator = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(validator)
 
 
-class CodexCompositionTests(unittest.TestCase):
+class CodexCompositionTests(CodexDeliveryFixture, unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
-        self.base = Path(self.temp.name)
-        self.source = self.base / 'delivery'
-        shutil.copytree(ROOT / 'vps-site/apps/codex', self.source / 'apps/codex')
-        (self.source / 'src').mkdir()
-        shutil.copyfile(ROOT / 'vps-site/src/codex-payload.js', self.source / 'src/codex-payload.js')
-        with tarfile.open(self.source / 'apps/codex/codex-source.tar.gz') as archive:
-            self.commit = archive.pax_headers['comment']
-        self.refresh()
+        super().setUp()
+        self.commit = 'a' * 40
+        self.write_delivery(self.manifest)
+
+    def public_portal(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        portal = Path(directory.name) / 'portal'
+        for path in validator.public_files(ROOT / 'vps-site') + [ROOT / 'vps-site/manifest.json']:
+            target = portal / path.relative_to(ROOT / 'vps-site')
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(path, target)
+        path = portal / 'manifest.json'
+        record = json.loads(path.read_text())
+        record['sha256'] = {file.relative_to(portal).as_posix(): validator.digest(file)
+                            for file in validator.public_files(portal)}
+        path.write_text(json.dumps(record, indent=2) + '\n')
+        validator.verify(portal)
+        return portal
 
     def refresh(self):
         manifest = json.loads((self.source / 'apps/codex/manifest.json').read_text())
@@ -37,8 +46,7 @@ class CodexCompositionTests(unittest.TestCase):
         }))
 
     def test_composes_release_and_updates_both_pins_and_provenance(self):
-        portal = self.base / 'portal'
-        shutil.copytree(ROOT / 'vps-site', portal)
+        portal = self.public_portal()
         compose.compose(portal, self.source, self.commit)
         validator.verify(portal)
         record = json.loads((portal / 'manifest.json').read_text())
@@ -80,8 +88,7 @@ class CodexCompositionTests(unittest.TestCase):
             compose.verify_delivery(self.source, self.commit)
 
     def test_unsupported_native_asset_is_rejected_before_replacing_portal(self):
-        portal = self.base / 'portal'
-        shutil.copytree(ROOT / 'vps-site', portal)
+        portal = self.public_portal()
         before = (portal / 'manifest.json').read_bytes()
         path = self.source / 'apps/codex/manifest.json'
         manifest = json.loads(path.read_text())

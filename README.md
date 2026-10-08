@@ -21,7 +21,7 @@ python3 scripts/portal-manifest.py --output dist/portal
 
 No Botty+ source checkout or PS5 toolchain is needed. The committed app packages
 are a verified fallback for standalone export. On the VPS, the synchronizer
-assembles Portal+ `main`, Botty+ `main` and the verified Codex PS5 `main` build; any commit changing triggers an
+assembles Portal+ `main`, Botty+ `main` and the verified Codex PS5 `main` build; a change to any of those commits triggers an
 update. It imports only verified runtime packages, notices and corresponding
 source, updates installer hashes, then atomically publishes. Invalid packages or
 a commit advancing during composition leave the current portal online.

@@ -57,6 +57,12 @@ with 16 GiB allocated on disk (requires 20 GiB free), mounts it at
 `/home/gh-runner/codex-workspace`, and adds a dedicated `loop,nosuid,nodev`
 ext4 entry to `/etc/fstab` for reboot. The backing image remains root-owned
 and private. Only the mapped container UID 1001 can write the mounted home.
+New images are allocated and formatted in a root-owned temporary file, then
+validated and atomically hard-linked to the final backing path without clobbering
+an existing file. Concurrent formatters validate and retain the first winner,
+then unlink their own temporary file. Interrupted/failed
+formatting cannot publish a sized but invalid image; existing invalid backing
+files are refused rather than reformatted or mounted.
 There are no broader host directory mounts. Before registration, after every
 session, and on service stop, a bounded, network-disabled unprivileged container
 removes all home contents, retaining the filesystem. Failed cleanup prevents
@@ -89,9 +95,12 @@ SDK bootstrap, and Rust patch into a temporary build context. Downloaded
 SDK/OpenSSL/curl archives are SHA-256 checked by that bootstrap. Rust is
 version-pinned to the official 1.95.0 image. The base runner is selected by
 its local immutable image ID. A SHA-256 of the Dockerfile and toolchain input
-files is recorded in an image label and `toolchain-<sha>` tag. The independent
-candidate passes a read-only/no-network toolchain smoke check before promotion
-to `codex-runner:latest`. Build containers are limited to 2 CPUs/4 GiB; existing
+files is recorded in the `com.portablelle.codex-runner.input-config-sha` label.
+That label identifies configuration inputs, not all base images or installed
+content. The exact built image ID passes a read-only/no-network toolchain smoke
+check before promotion to `codex-runner:latest` and `image-<image-id>`; candidate
+tag changes cannot alter validation or promotion, and distinct images never
+share a generated version tag. Build containers are limited to 2 CPUs/4 GiB; existing
 Plus images and containers are not rebuilt or restarted. Keep old Codex tags
 until their jobs finish; there is no automatic Codex image pruning.
 
@@ -156,7 +165,14 @@ minutes, so a temporarily unavailable network at boot is retried.
 restart after Docker failures. Each normal exit revokes any unused JIT
 identity; failed deletions retain their ID and are retried before a new
 registration. `ExecStopPost=stop-slot.sh` also stops/removes the container and
-revokes the identity after an unexpected/forced slot exit. Cleanup has bounded
+revokes the identity after an unexpected/forced slot exit. The additive installer
+installs a Codex-only `TimeoutStopSec=180` drop-in; Botty/Portal retain the template
+default of 90 seconds. The Codex finalizer has a 147-second worst-case CLI budget:
+27 seconds to stop, 12 to remove, 37 for the broker (35 plus forced-kill grace),
+and 71 for workspace cleanup including lock wait, checks, and both orphan-reaping
+passes. Every timed client gets a two-second forced-kill grace, so ignoring TERM
+cannot turn a client deadline into an indefinite wait. The 180-second limit
+retains headroom for local filesystem and process overhead. Cleanup has bounded
 timeouts, and `KillMode=mixed` cleans up remaining unit processes.
 A manual service stop/restart intentionally aborts an in-flight CI job after
 up to 20 seconds; do this only when a job may be cancelled. Weekly image

@@ -3,18 +3,45 @@ set -euo pipefail
 [[ $# == 0 ]] || exit 2
 image=/var/lib/plus-runner-codex/workspace.img
 workspace=/home/gh-runner/codex-workspace
+temporary=
+cleanup() {
+  [[ -z "$temporary" ]] || sudo rm -f -- "$temporary"
+}
+trap cleanup EXIT
+trap 'exit 143' TERM INT
+valid_image() {
+  sudo test -f "$1" && ! sudo test -L "$1" &&
+    [[ $(sudo stat -c %s "$1") == 17179869184 ]] &&
+    [[ $(sudo blkid -p -s TYPE -o value "$1") == ext4 ]]
+}
 sudo install -d -o root -g root -m 700 /var/lib/plus-runner-codex
-if ! sudo test -f "$image"; then
+if ! sudo test -e "$image" && ! sudo test -L "$image"; then
   available=$(df -B1 --output=avail /var/lib/plus-runner-codex | tail -1)
   ((available > 20 * 1024 * 1024 * 1024)) || {
     echo "Codex scratch requires at least 20 GiB free disk." >&2
     exit 1
   }
-  sudo fallocate -l 16G "$image"
-  sudo chmod 600 "$image"
-  sudo mkfs.ext4 -q -m 0 "$image"
+  temporary=$(sudo mktemp /var/lib/plus-runner-codex/.workspace.XXXXXX)
+  sudo fallocate -l 16G "$temporary"
+  sudo chmod 600 "$temporary"
+  sudo mkfs.ext4 -q -m 0 "$temporary"
+  valid_image "$temporary" || {
+    echo "CODEX_WORKSPACE_IMAGE_INVALID: refusing to publish an unvalidated filesystem." >&2
+    exit 1
+  }
+  if ! sudo ln -T "$temporary" "$image"; then
+    valid_image "$image" || {
+      echo "CODEX_WORKSPACE_IMAGE_INVALID: concurrent publication did not leave a valid backing image." >&2
+      exit 1
+    }
+  fi
+  sudo rm -f -- "$temporary"
+  temporary=
 fi
-[[ $(sudo stat -c %s "$image") == 17179869184 ]] || exit 1
+valid_image "$image" || {
+  echo "CODEX_WORKSPACE_IMAGE_INVALID: refusing to mount or overwrite the existing image." >&2
+  exit 1
+}
 if ! mountpoint -q "$workspace"; then
   sudo install -d -o root -g root -m 755 "$workspace"
 fi

@@ -4,17 +4,23 @@ export const SERVICE = '/data/codex-ps5/payloads/assistant-service';
 export const UPDATE = '/data/codex-ps5/installer';
 const HASH = '49730848c216d25041e7548d919678f34300c743f2dd1cbb4a82fdf95a76eb18';
 const FILES = ['assets/ui-font.bin', 'eboot.bin', 'sce_module/libc.prx', 'sce_sys/icon0.png', 'sce_sys/param.json'];
+const MODELS = ['assets/ggml-base.bin', 'assets/ggml-small-q5_1.bin'];
 const encoder = new TextEncoder(), decoder = new TextDecoder();
 const hex = x => /^[a-f0-9]{64}$/.test(x);
 export function validatePackage(m) {
   if (m.schema !== 1 || m.titleId !== 'PPSA99105' || !/^\d+\.\d+\.\d+$/.test(m.version) || !hex(m.serviceBuild) || m.chunkSize !== 1048576 ||
       !Array.isArray(m.native) || !Array.isArray(m.service) || m.native.length > 128 || m.service.length !== 1 ||
       new Set(m.native.map(f => f.path)).size !== m.native.length || FILES.some(path => !m.native.some(f => f.path === path)) ||
-      m.native.filter(f => ['assets/ggml-base.bin', 'assets/ggml-small-q5_1.bin'].includes(f.path)).length !== 1 ||
-      m.native.some(f => !FILES.includes(f.path) && !['assets/ggml-base.bin', 'assets/ggml-small-q5_1.bin'].includes(f.path) &&
+      m.native.filter(f => MODELS.includes(f.path)).length !== 1 ||
+      m.native.some(f => !FILES.includes(f.path) && !MODELS.includes(f.path) &&
         !/^release\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+$/.test(f.path)) ||
       m.native.some(f => f.path.split('/').some(part => part === '.' || part === '..')) || m.service[0].path !== 'assistant-service.elf')
     throw Error('Unexpected Codex package.');
+  const paths = new Set(m.native.map(f => f.path));
+  if (m.native.some(f => {
+    const parts = f.path.split('/');
+    return parts.some((_, index) => index > 0 && paths.has(parts.slice(0, index).join('/')));
+  })) throw Error('Unexpected Codex package.');
   for (const f of [...m.native, ...m.service]) {
     if (!Number.isSafeInteger(f.size) || f.size < 1 || f.size > 256 * 1024 * 1024 || !hex(f.sha256) ||
         !Array.isArray(f.chunks) || f.chunks.length !== Math.ceil(f.size / m.chunkSize) || f.chunks.some(h => !hex(h))) throw Error('Invalid Codex file.');
@@ -39,7 +45,7 @@ function sameStamp(a, b) {
 async function installedMatches(io, m, digest, report) {
   // An unavailable/unknown stat ABI falls back to full verification, never to trust.
   let receipt;
-  try { const bytes = await io.readFile(RECEIPT, 16384); if (bytes) receipt = JSON.parse(decoder.decode(bytes)); } catch (_) {}
+  try { const bytes = await io.readFile(RECEIPT, 512 * 1024); if (bytes) receipt = JSON.parse(decoder.decode(bytes)); } catch (_) {}
   const cached = receipt?.schema === 1 && receipt.target === HASH && receipt.files && typeof receipt.files === 'object';
   const entries = {};
   let reusable = typeof io.fileStamp === 'function', changed = false;

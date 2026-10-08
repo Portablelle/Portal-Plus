@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import configparser
 import json
 import os
 from pathlib import Path
@@ -10,7 +11,7 @@ import unittest
 
 ROOT = Path(__file__).resolve().parent
 MOCK = '''#!/usr/bin/env python3
-import json, os, pathlib, subprocess, sys
+import json, os, pathlib, signal, subprocess, sys, time
 name = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
 state_path = pathlib.Path(os.environ["MOCK_STATE"])
@@ -18,12 +19,24 @@ state = json.loads(state_path.read_text())
 with open(os.environ["COMMAND_LOG"], "a") as log:
     log.write(json.dumps([name, *args]) + "\\n")
 if name == "timeout":
-    sys.exit(subprocess.run(args[args.index("docker"):]).returncode)
+    command = next(index for index, arg in enumerate(args) if arg in ("docker", "sudo"))
+    sys.exit(subprocess.run(args[command:]).returncode)
 if name == "findmnt":
     print("ext4")
 elif name == "sudo":
+    assert args == ["-n", "/usr/local/sbin/plus-runner-api", "codex", "delete", "42"], args
     sys.exit(state.get("broker_failure", 0))
 elif name == "docker":
+    if args[0] == "stop" and args[-1] == "plus-codex" and state.get("signal_stop") and not state.get("signal_sent"):
+        pid_file = pathlib.Path(os.environ["XDG_RUNTIME_DIR"]) / "stop-pid"
+        deadline = time.monotonic() + 5
+        while not pid_file.exists():
+            if time.monotonic() > deadline:
+                raise RuntimeError("missing stop process PID")
+            time.sleep(0.01)
+        state["signal_sent"] = True
+        state_path.write_text(json.dumps(state))
+        os.kill(int(pid_file.read_text()), signal.SIGTERM)
     if args[0] in ("stop", "rm") and args[-1] == "plus-codex-cleanup":
         if not state.get("unreapable"):
             state["orphan"] = False
@@ -115,6 +128,31 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual((runtime / "runner-id").read_text(), "42\n")
         self.assertFalse((runtime / "jit.stale").exists())
         self.assertEqual(list(self.home.iterdir()), [])
+        self.assertIn(["sudo", "-n", "/usr/local/sbin/plus-runner-api", "codex", "delete", "42"], self.commands())
+
+    def test_term_during_stop_still_removes_job_revokes_identity_and_cleans(self):
+        runtime = self.root / "plus-runner-codex"
+        runtime.mkdir()
+        for failure in (0, 7):
+            with self.subTest(broker_failure=failure):
+                self.state.write_text(json.dumps({"signal_stop": True, "broker_failure": failure}))
+                (self.root / "stop-pid").unlink(missing_ok=True)
+                (runtime / "runner-id").write_text("42\n")
+                (runtime / "jit.stale").write_text("test-config")
+                (self.home / "data").write_text("remove")
+                process = subprocess.Popen(["bash", str(ROOT / "stop-slot.sh"), "codex"],
+                                           env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                (self.root / "stop-pid").write_text(str(process.pid))
+                _, stderr = process.communicate(timeout=20)
+                self.assertEqual(process.returncode, failure, stderr)
+                self.assertTrue(json.loads(self.state.read_text())["signal_sent"])
+                self.assertEqual((runtime / "runner-id").exists(), bool(failure))
+                if failure:
+                    self.assertEqual((runtime / "runner-id").read_text(), "42\n")
+                self.assertFalse((runtime / "jit.stale").exists())
+                self.assertEqual(list(self.home.iterdir()), [])
+                self.assertIn(["docker", "rm", "-f", "plus-codex"], self.commands())
+                self.assertIn(["sudo", "-n", "/usr/local/sbin/plus-runner-api", "codex", "delete", "42"], self.commands())
 
     def test_deep_tree_cleans_with_a_small_descriptor_limit(self):
         self.state.write_text(json.dumps({"low_fd_limit": True}))
@@ -126,6 +164,35 @@ class CleanupTests(unittest.TestCase):
         result = self.invoke("clean-codex-workspace.sh")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(list(self.home.iterdir()), [])
+
+    def test_codex_shutdown_budget_covers_ordered_bounded_finalizer(self):
+        runtime = self.root / "plus-runner-codex"
+        runtime.mkdir()
+        (runtime / "runner-id").write_text("42\n")
+        result = self.invoke("stop-slot.sh")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        commands = self.commands()
+        timeouts = [command for command in commands if command[0] == "timeout"]
+        self.assertTrue(all(command[1] == "--kill-after=2" for command in timeouts))
+        budget = sum(float(command[2]) + 2 for command in timeouts)
+        budget += sum(float(command[2]) for command in commands if command[:2] == ["flock", "-w"])
+        self.assertEqual(budget, 147)
+        base = configparser.ConfigParser(strict=False)
+        base.read(ROOT / "plus-runner@.service")
+        codex = configparser.ConfigParser()
+        codex.read(ROOT / "plus-runner@codex.service.d" / "timeout.conf")
+        self.assertEqual(base.getint("Service", "TimeoutStopSec"), 90)
+        self.assertEqual(codex.getint("Service", "TimeoutStopSec"), 180)
+        self.assertLess(budget, codex.getint("Service", "TimeoutStopSec"))
+        self.assertLess(27 + 12 + 37, base.getint("Service", "TimeoutStopSec"))
+        stop = next(index for index, command in enumerate(commands) if command[:2] == ["docker", "stop"] and command[-1] == "plus-codex")
+        remove = commands.index(["docker", "rm", "-f", "plus-codex"])
+        revoke = commands.index(["sudo", "-n", "/usr/local/sbin/plus-runner-api", "codex", "delete", "42"])
+        cleanup = next(index for index, command in enumerate(commands) if command[:2] == ["docker", "run"])
+        self.assertLess(stop, remove)
+        self.assertLess(remove, revoke)
+        self.assertLess(revoke, cleanup)
+        self.assertIn(["timeout", "--kill-after=2", "35", "sudo", "-n", "/usr/local/sbin/plus-runner-api", "codex", "delete", "42"], commands)
 
     def test_wide_directories_are_scanned_once_without_restarting_per_file(self):
         self.state.write_text(json.dumps({"expected_scans": 21}))
@@ -171,6 +238,7 @@ class CleanupTests(unittest.TestCase):
         self.state.write_text(json.dumps({"orphan": True, "unreapable": True}))
         result = self.invoke("clean-codex-workspace.sh")
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn("CODEX_CLEANUP_CONTAINER_NOT_REAPED", result.stderr)
         self.assertFalse(any(command[:2] == ["docker", "run"] for command in self.commands()))
 
     def test_active_job_is_not_stopped_and_its_workspace_is_untouched(self):
@@ -179,6 +247,7 @@ class CleanupTests(unittest.TestCase):
         sentinel.write_text("active-job")
         result = self.invoke("clean-codex-workspace.sh")
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn("CODEX_JOB_CONTAINER_PRESENT", result.stderr)
         self.assertEqual(sentinel.read_text(), "active-job")
         commands = self.commands()
         self.assertFalse(any(command[:2] == ["docker", "run"] for command in commands))
@@ -204,6 +273,7 @@ class CleanupTests(unittest.TestCase):
         sentinel.write_text("created-job")
         result = self.invoke("clean-codex-workspace.sh")
         self.assertNotEqual(result.returncode, 0)
+        self.assertIn("CODEX_JOB_CONTAINER_PRESENT", result.stderr)
         self.assertEqual(sentinel.read_text(), "created-job")
         self.assertFalse(any(command[:2] == ["docker", "run"] for command in self.commands()))
 

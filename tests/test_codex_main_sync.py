@@ -1,14 +1,17 @@
 import hashlib
+from contextlib import contextmanager, ExitStack
 import json
 from pathlib import Path
 import shutil
 import subprocess
 import tarfile
+import tempfile
 import unittest
 from types import SimpleNamespace
 from unittest.mock import patch
 
 import test_portal_main_sync as main_sync
+from test_codex_contract import write_parser_archive
 
 sync = main_sync.sync
 
@@ -28,6 +31,20 @@ class CodexHeadTests(unittest.TestCase):
                 with self.subTest(repository=repository), self.assertRaisesRegex(RuntimeError, 'Invalid Codex repository'):
                     sync.codex_remote_head(repository)
             command.assert_not_called()
+
+    def test_solaris_metadata_and_sparse_maps_are_rejected_before_parsing(self):
+        with tempfile.TemporaryDirectory() as directory, ExitStack() as stack:
+            path = Path(directory) / 'delivery.tar.gz'
+            for method in ('_proc_sparse', '_proc_gnusparse_00', '_proc_gnusparse_01', '_proc_gnusparse_10'):
+                stack.enter_context(patch.object(tarfile.TarInfo, method,
+                                                 side_effect=AssertionError('Sparse map parser was entered')))
+            for case in ('Solaris oversized', 'Solaris consecutive', 'GNU sparse',
+                         'GNU sparse 0.0', 'GNU sparse 0.1', 'GNU sparse 1.0'):
+                with self.subTest(case=case):
+                    write_parser_archive(path, case)
+                    with self.assertRaisesRegex(RuntimeError, 'staging limits'):
+                        with sync.codex_archive(path) as archive:
+                            list(archive)
 
 
 class CodexMainSyncTests(main_sync.DualRepositorySyncTests):
@@ -59,7 +76,7 @@ path.write_text(json.dumps(m))
             for path in self.delivery.iterdir():
                 archive.add(path, arcname=path.name)
 
-    def deploy_triple(self, heads=None, missing=False, asset_size=None, free=16 * 1024 ** 3):
+    def deploy_triple(self, heads=None, missing=False, asset_size=None, free=16 * 1024 ** 3, release_free=None):
         original = sync.command
 
         def command(args, **kwargs):
@@ -73,7 +90,11 @@ path.write_text(json.dumps(m))
                 return ''
             return original(args, **kwargs)
 
-        with patch.object(sync.shutil, 'disk_usage', return_value=SimpleNamespace(free=free)), \
+        def disk_usage(path):
+            return SimpleNamespace(free=release_free if Path(path) == self.root / 'releases' and
+                                   release_free is not None else free)
+
+        with patch.object(sync.shutil, 'disk_usage', side_effect=disk_usage), \
                 patch.object(sync, 'command', side_effect=command), patch.object(
                 sync, 'codex_remote_head', side_effect=heads or [self.codex_head, self.codex_head]):
             return sync.sync_main(str(self.repo), self.state, self.root, str(self.botty), 'Portablelle/Codex-PS5')
@@ -144,11 +165,62 @@ path.write_text(json.dumps(m))
             self.deploy_triple(free=0)
         member = tarfile.TarInfo('oversized')
         member.size = 256 * 1024 * 1024 + 1
-        with patch.object(sync.tarfile.TarFile, 'getmembers', return_value=[member]):
+        @contextmanager
+        def archive(members):
+            yield iter(members)
+
+        with patch.object(sync, 'codex_archive', side_effect=lambda path: archive([member])):
             with self.assertRaisesRegex(RuntimeError, 'staging limits'):
                 self.deploy_triple()
         member.size = 256 * 1024 * 1024
-        with patch.object(sync.tarfile.TarFile, 'getmembers', return_value=[member] * 9):
+        members = []
+        for index in range(9):
+            entry = tarfile.TarInfo(f'large-{index}')
+            entry.size = member.size
+            members.append(entry)
+        with patch.object(sync, 'codex_archive', side_effect=lambda path: archive(members)):
             with self.assertRaisesRegex(RuntimeError, 'staging limits'):
                 self.deploy_triple()
         self.assertEqual((self.root / 'current').resolve(), previous)
+
+    def test_outer_archive_streams_and_rejects_header_and_metadata_bombs(self):
+        with patch.object(sync.tarfile.TarFile, 'getmembers', side_effect=AssertionError('Unbounded archive scan')):
+            self.deploy_triple()
+        previous = (self.root / 'current').resolve()
+        self.codex_head = 'd' * 40
+        for case in ('member count', 'member size', 'metadata size', 'metadata chain'):
+            with self.subTest(case=case):
+                with tarfile.open(self.asset, 'w:gz', format=tarfile.PAX_FORMAT) as archive:
+                    if case == 'member count':
+                        for index in range(10001):
+                            archive.addfile(tarfile.TarInfo(f'empty-{index}'))
+                    elif case == 'member size':
+                        member = tarfile.TarInfo('oversized')
+                        member.size = 256 * 1024 * 1024 + 1
+                        archive.fileobj.write(member.tobuf())
+                    elif case == 'metadata size':
+                        member = tarfile.TarInfo('tiny')
+                        member.pax_headers = {'comment': 'x' * 65537}
+                        archive.addfile(member)
+                    else:
+                        for index in range(65):
+                            member = tarfile.TarInfo(f'pax-{index}')
+                            member.type = tarfile.XHDTYPE
+                            archive.addfile(member)
+                        archive.addfile(tarfile.TarInfo('empty'))
+                with self.assertRaisesRegex(RuntimeError, 'staging limits'):
+                    self.deploy_triple()
+                self.assertEqual((self.root / 'current').resolve(), previous)
+
+    def test_release_filesystem_space_is_checked_against_actual_export_bytes(self):
+        self.deploy_triple()
+        previous = (self.root / 'current').resolve()
+        manifest = json.loads((previous / 'manifest.json').read_text())
+        export_size = (previous / 'manifest.json').stat().st_size + sum(
+            (previous / name).stat().st_size for name in manifest['sha256'])
+        self.codex_head = 'd' * 40
+        self.make_asset('codex-2')
+        with self.assertRaisesRegex(RuntimeError, 'free space for portal export'):
+            self.deploy_triple(release_free=export_size + 512 * 1024 * 1024 - 1)
+        self.assertEqual((self.root / 'current').resolve(), previous)
+        self.assertTrue(self.deploy_triple(release_free=export_size + 512 * 1024 * 1024).startswith('deployed'))

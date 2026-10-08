@@ -1,6 +1,8 @@
 #!/usr/bin/env python3
 """Compose the portal with a verified, commit-addressed Codex delivery."""
 import argparse
+from contextlib import contextmanager
+import gzip
 import hashlib
 import importlib.util
 import json
@@ -8,13 +10,61 @@ from pathlib import Path
 import re
 import shutil
 import tarfile
+import zlib
+
+
+@contextmanager
+def source_archive(path):
+    headers = 0
+    extensions = 0
+
+    class LimitedInfo(tarfile.TarInfo):
+        @classmethod
+        def frombuf(cls, buf, encoding, errors):
+            nonlocal headers, extensions
+            if buf[156:157] == tarfile.GNUTYPE_SPARSE:
+                raise ValueError('Codex source archive exceeds limits: sparse files are unsupported')
+            info = super().frombuf(buf, encoding, errors)
+            headers += 1
+            metadata = info.type in (tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.SOLARIS_XHDTYPE,
+                                    tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK)
+            extensions = extensions + 1 if metadata else 0
+            limit = 65536 if metadata else 32 * 1024 * 1024
+            if headers > 10000 or extensions > 64 or not 0 <= info.size <= limit:
+                raise ValueError('Codex source archive exceeds limits')
+            return info
+
+        def _proc_gnusparse_00(self, next, raw_headers):
+            raise ValueError('Codex source archive exceeds limits: sparse files are unsupported')
+
+        def _proc_gnusparse_01(self, next, pax_headers):
+            raise ValueError('Codex source archive exceeds limits: sparse files are unsupported')
+
+        def _proc_gnusparse_10(self, next, pax_headers, archive):
+            raise ValueError('Codex source archive exceeds limits: sparse files are unsupported')
+
+    class LimitedReader:
+        def __init__(self, stream):
+            self.stream = stream
+            self.remaining = 128 * 1024 * 1024
+
+        def read(self, size):
+            data = self.stream.read(min(size, self.remaining + 1))
+            self.remaining -= len(data)
+            if self.remaining < 0:
+                raise ValueError('Codex source archive exceeds limits')
+            return data
+
+    with gzip.open(path, 'rb') as stream:
+        with tarfile.open(fileobj=LimitedReader(stream), mode='r|', tarinfo=LimitedInfo) as archive:
+            yield archive
 
 
 def verify_delivery(source, commit):
     if not re.fullmatch('[a-f0-9]{40}', commit):
         raise ValueError('Invalid Codex commit')
     record = json.loads((source / 'codex-release.json').read_text())
-    if record.get('schema') != 1 or record.get('commit') != commit:
+    if type(record.get('schema')) is not int or record['schema'] != 1 or record.get('commit') != commit:
         raise ValueError('Codex delivery does not match main')
     hashes = record.get('sha256')
     if not isinstance(hashes, dict) or not hashes:
@@ -32,11 +82,20 @@ def verify_delivery(source, commit):
         if (rel.is_absolute() or '..' in rel.parts or rel.as_posix() != name or '\\' in name or
                 not (name.startswith('apps/codex/') or name == 'src/codex-payload.js')):
             raise ValueError('Unsafe Codex delivery path')
-        if hashlib.sha256((source / name).read_bytes()).hexdigest() != digest:
+        path = source / name
+        if name == 'src/codex-payload.js' and path.stat().st_size > 256 * 1024:
+            raise ValueError('Codex payload exceeds limit')
+        content_hash = hashlib.sha256()
+        with path.open('rb') as stream:
+            while block := stream.read(1048576):
+                content_hash.update(block)
+        if content_hash.hexdigest() != digest:
             raise ValueError('Codex content mismatch: ' + name)
     required = {'apps/codex/' + name for name in ('manifest.json', 'LICENSE', 'NOTICE.md', 'codex-source.tar.gz')}
     if not required.issubset(actual) or 'src/codex-payload.js' not in actual:
         raise ValueError('Incomplete Codex delivery')
+    if any((source / 'apps/codex' / name).stat().st_size < 1 for name in ('LICENSE', 'NOTICE.md')):
+        raise ValueError('Empty Codex license or notice')
     manifest_path = source / 'apps/codex/manifest.json'
     if manifest_path.stat().st_size > 256 * 1024:
         raise ValueError('Codex manifest exceeds installer limit')
@@ -134,35 +193,57 @@ def verify_delivery(source, commit):
     except (TypeError, AttributeError, UnicodeDecodeError, json.JSONDecodeError) as error:
         raise ValueError('Invalid Codex native title metadata') from error
     try:
-        with tarfile.open(source / 'apps/codex/codex-source.tar.gz', mode='r:gz') as archive:
+        with source_archive(source / 'apps/codex/codex-source.tar.gz') as archive:
             if archive.pax_headers.get('comment') != commit:
                 raise ValueError('Codex source archive does not match commit')
-            prefix = 'codex-source/' if 'codex-source/VERSION' in archive.getnames() else ''
-            version_file = archive.getmember(prefix + 'VERSION')
-            license_file = archive.getmember(prefix + 'LICENSE')
-            if not version_file.isfile() or version_file.size > 128 or not license_file.isfile() or license_file.size < 1:
+            entries = {}
+            inputs_data = {}
+            total = retained = 0
+            prefix = None
+            for member in archive:
+                name = member.name.rstrip('/')
+                rel = Path(name)
+                if (not name or rel.is_absolute() or '..' in rel.parts or rel.as_posix() != name or
+                        '\\' in name or not (member.isfile() or member.isdir()) or member.size < 0 or
+                        member.size > 32 * 1024 * 1024 or name in entries):
+                    raise ValueError('Invalid Codex source archive member')
+                entries[name] = member.size if member.isfile() else None
+                total += member.size
+                if len(entries) > 10000 or total > 128 * 1024 * 1024:
+                    raise ValueError('Codex source archive exceeds limits')
+                if name in ('VERSION', 'codex-source/VERSION'):
+                    if prefix is not None or not member.isfile() or member.size > 128:
+                        raise ValueError('Incomplete Codex source archive')
+                    prefix = 'codex-source/' if name.startswith('codex-source/') else ''
+                logical = name.removeprefix('codex-source/')
+                if member.isfile() and (logical in ('VERSION', 'upstream-lock.json') or
+                        logical.count('/') == 1 and logical.split('/')[0] in ('backend', 'tools', 'src')):
+                    retained += member.size
+                    if retained > 16 * 1024 * 1024:
+                        raise ValueError('Codex source build inputs exceed limit')
+                    with archive.extractfile(member) as stream:
+                        inputs_data[name] = stream.read()
+            if prefix is None or not entries.get(prefix + 'LICENSE'):
                 raise ValueError('Incomplete Codex source archive')
-            with archive.extractfile(version_file) as stream:
-                if stream.read().decode().strip() != manifest['version']:
-                    raise ValueError('Codex source version mismatch')
-            entries = {member.name.removeprefix(prefix): member for member in archive.getmembers() if member.isfile()}
+            if inputs_data[prefix + 'VERSION'].decode().strip() != manifest['version']:
+                raise ValueError('Codex source version mismatch')
+            entries = {name.removeprefix(prefix): size for name, size in entries.items() if name.startswith(prefix)}
             required_sources = ('upstream-lock.json', 'backend/assistant-service.c', 'src/main.cpp',
                                 'tools/build-native.sh', 'tools/build-backend-linux.sh',
                                 'vendor/ps5-ai-cli/app/entry.c')
-            if any(name not in entries or entries[name].size < 1 for name in required_sources):
+            if any(not entries.get(name) for name in required_sources):
                 raise ValueError('Incomplete Codex corresponding sources')
             inputs = ['VERSION', 'upstream-lock.json']
             for directory in ('backend', 'tools', 'src'):
-                inputs.extend(sorted(name for name in entries if name.startswith(directory + '/') and name.count('/') == 1))
+                inputs.extend(sorted(name for name, size in entries.items() if size is not None and
+                                     name.startswith(directory + '/') and name.count('/') == 1))
             identity = hashlib.sha256()
             for name in inputs:
                 identity.update(name.encode() + b'\0')
-                with archive.extractfile(entries[name]) as stream:
-                    while block := stream.read(1048576):
-                        identity.update(block)
+                identity.update(inputs_data[prefix + name])
             if identity.hexdigest() != manifest['serviceBuild']:
                 raise ValueError('Codex source build identity mismatch')
-    except (tarfile.TarError, KeyError, UnicodeDecodeError) as error:
+    except (tarfile.TarError, KeyError, UnicodeDecodeError, gzip.BadGzipFile, EOFError, zlib.error) as error:
         raise ValueError('Invalid Codex corresponding-source archive') from error
     code = (source / 'src/codex-payload.js').read_text()
     if not code.startswith('export const PAYLOAD = ') or not code.endswith(';\n'):

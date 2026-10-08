@@ -188,8 +188,6 @@ sudo install -m 0644 deployment/sync-portal-main.py /opt/botty-portal/sync-porta
 sudo chown botty-portal:botty-portal /var/www/botty-ps5 /var/www/botty-ps5/releases
 sudo install -m 0644 deployment/botty-portal-sync.service deployment/botty-portal-sync.timer /etc/systemd/system/
 sudo systemctl daemon-reload
-sudo systemctl enable --now botty-portal-sync.timer
-sudo systemctl start botty-portal-sync.service
 ```
 
 Set `BOTTY_PORTAL_REPOSITORY`, `BOTTY_APP_REPOSITORY` and `CODEX_APP_REPOSITORY` in
@@ -201,6 +199,13 @@ private: provision a read-only GitHub token with repository contents access as
 `GH_TOKEN` in the service's root-owned, mode-0600 environment file. Do not put it
 in a repository URL, public release or log. Verify access as the service user
 before enabling the timer.
+
+After the environment file is configured and repository access is verified:
+
+```sh
+sudo systemctl enable --now botty-portal-sync.timer
+sudo systemctl start botty-portal-sync.service
+```
 
 Codex's self-hosted publication workflow on `dedie` builds each `main` commit
 and publishes `codex-portal.tar.gz` in an immutable `portal-<commit>` release.

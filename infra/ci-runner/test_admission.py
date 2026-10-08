@@ -16,7 +16,7 @@ root = pathlib.Path(os.environ["XDG_RUNTIME_DIR"])
 with open(root / "commands.jsonl", "a") as log:
     log.write(json.dumps([name, *args]) + "\\n")
 def until(path):
-    deadline = time.monotonic() + 4
+    deadline = time.monotonic() + 20
     while not path.exists():
         if time.monotonic() >= deadline:
             raise RuntimeError("admission fixture timed out")
@@ -81,7 +81,7 @@ class AdmissionTests(unittest.TestCase):
                                          "XDG_RUNTIME_DIR": directory,
                                          "CLEANER": str(ROOT / "clean-codex-workspace.sh"),
                                          "CREATE_FAILURE": "1" if create_failure else ""},
-                                    capture_output=True, text=True, timeout=15)
+                                    capture_output=True, text=True, timeout=45)
             commands = [json.loads(line) for line in (root / "commands.jsonl").read_text().splitlines()]
             outcome = (root / "cleaner-result").read_text() if (root / "cleaner-result").exists() else None
             return result, commands, outcome

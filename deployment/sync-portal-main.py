@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Publish a verified snapshot of the latest main commit, without console changes."""
 import argparse
+from contextlib import contextmanager
 import fcntl
+import gzip
 import hashlib
 import json
 import os
@@ -12,6 +14,54 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import zlib
+
+
+@contextmanager
+def codex_archive(path):
+    headers = 0
+    extensions = 0
+
+    class LimitedInfo(tarfile.TarInfo):
+        @classmethod
+        def frombuf(cls, buf, encoding, errors):
+            nonlocal headers, extensions
+            if buf[156:157] == tarfile.GNUTYPE_SPARSE:
+                raise RuntimeError('Codex release archive exceeds staging limits: sparse files are unsupported')
+            info = super().frombuf(buf, encoding, errors)
+            headers += 1
+            metadata = info.type in (tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.SOLARIS_XHDTYPE,
+                                    tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK)
+            extensions = extensions + 1 if metadata else 0
+            limit = 65536 if metadata else 256 * 1024 * 1024
+            if headers > 10000 or extensions > 64 or not 0 <= info.size <= limit:
+                raise RuntimeError('Codex release archive exceeds staging limits')
+            return info
+
+        def _proc_gnusparse_00(self, next, raw_headers):
+            raise RuntimeError('Codex release archive exceeds staging limits: sparse files are unsupported')
+
+        def _proc_gnusparse_01(self, next, pax_headers):
+            raise RuntimeError('Codex release archive exceeds staging limits: sparse files are unsupported')
+
+        def _proc_gnusparse_10(self, next, pax_headers, archive):
+            raise RuntimeError('Codex release archive exceeds staging limits: sparse files are unsupported')
+
+    class LimitedReader:
+        def __init__(self, stream):
+            self.stream = stream
+            self.remaining = 2 * 1024 * 1024 * 1024 + 64 * 1024 * 1024
+
+        def read(self, size):
+            data = self.stream.read(min(size, self.remaining + 1))
+            self.remaining -= len(data)
+            if self.remaining < 0:
+                raise RuntimeError('Codex release archive exceeds staging limits')
+            return data
+
+    with gzip.open(path, 'rb') as stream:
+        with tarfile.open(fileobj=LimitedReader(stream), mode='r|', tarinfo=LimitedInfo) as archive:
+            yield archive
 
 
 def command(args, **kwargs):
@@ -216,21 +266,35 @@ def sync_main(repository, state, root, botty_repository=None, codex_repository=N
                          '--dir', str(delivery)])
                 if (delivery / 'codex-portal.tar.gz').stat().st_size != int(asset_size):
                     raise RuntimeError('Codex release asset size changed during download')
-                with tarfile.open(delivery / 'codex-portal.tar.gz') as archive:
-                    members = archive.getmembers()
-                    if (len(members) > 10000 or any(not (member.isfile() or member.isdir()) or
-                            member.size > 256 * 1024 * 1024 for member in members) or
-                            sum(member.size for member in members) > 2 * 1024 * 1024 * 1024):
-                        raise RuntimeError('Codex release archive exceeds staging limits')
+                archive_size = 0
+                names = set()
+                with codex_archive(delivery / 'codex-portal.tar.gz') as archive:
+                    for member in archive:
+                        name = member.name.rstrip('/')
+                        rel = Path(name)
+                        archive_size += member.size
+                        if (not name or rel.is_absolute() or '..' in rel.parts or rel.as_posix() != name or
+                                '\\' in name or name in names or not (member.isfile() or member.isdir()) or
+                                not 0 <= member.size <= 256 * 1024 * 1024 or len(names) >= 10000 or
+                                archive_size > 2 * 1024 * 1024 * 1024):
+                            raise RuntimeError('Codex release archive exceeds staging limits')
+                        names.add(name)
                     snapshot_size = sum(path.stat().st_size for path in (source / 'vps-site').rglob('*') if path.is_file())
-                    required_space = 3 * sum(member.size for member in members) + snapshot_size + 512 * 1024 * 1024
+                    required_space = 2 * archive_size + snapshot_size + 512 * 1024 * 1024
                     if shutil.disk_usage(state).free < required_space:
-                        raise RuntimeError('Insufficient free space for Codex staging and export')
+                        raise RuntimeError('Insufficient free space for Codex staging')
+                with codex_archive(delivery / 'codex-portal.tar.gz') as archive:
                     archive.extractall(delivery / 'package', filter='data')
                 command([sys.executable, str(source / 'scripts/compose-codex.py'),
                          '--root', str(source / 'vps-site'), '--codex', str(delivery / 'package'),
                          '--commit', codex_head])
             validator = source / 'scripts/portal-manifest.py'
+            portal = source / 'vps-site'
+            inventory = json.loads((portal / 'manifest.json').read_text())['sha256']
+            export_size = (portal / 'manifest.json').stat().st_size + sum(
+                (portal / name).stat().st_size for name in inventory)
+            if shutil.disk_usage(releases).free < export_size + 512 * 1024 * 1024:
+                raise RuntimeError('Insufficient free space for portal export')
             with tempfile.TemporaryDirectory(prefix='.staging-', dir=releases) as staging:
                 export = Path(staging) / 'portal'
                 command([sys.executable, str(validator), '--root',
@@ -282,7 +346,7 @@ def main():
     args = parser.parse_args()
     try:
         print(sync_main(args.repository, args.state.resolve(), args.root.resolve(), args.botty_repository, args.codex_repository))
-    except (OSError, RuntimeError, subprocess.SubprocessError, tarfile.TarError) as error:
+    except (OSError, RuntimeError, subprocess.SubprocessError, tarfile.TarError, EOFError, zlib.error) as error:
         print('Portal deployment failed: ' + str(error), file=sys.stderr)
         if isinstance(error, subprocess.CalledProcessError):
             print((error.stderr or error.stdout or '').strip()[-2000:], file=sys.stderr)

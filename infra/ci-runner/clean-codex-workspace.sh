@@ -6,10 +6,10 @@ exec 9>"${XDG_RUNTIME_DIR:?}/plus-runner-codex-cleanup.lock"
 flock -w 5 9 || exit 1
 container=plus-codex-cleanup
 reap() {
-  timeout 3 docker stop --time 1 "$container" >/dev/null 2>&1 || true
-  timeout 5 docker rm -f "$container" >/dev/null 2>&1 || true
+  timeout --kill-after=2 3 docker stop --time 1 "$container" >/dev/null 2>&1 || true
+  timeout --kill-after=2 5 docker rm -f "$container" >/dev/null 2>&1 || true
   local remaining
-  remaining=$(timeout 3 docker ps -aq --filter "name=^/$container$") || return 1
+  remaining=$(timeout --kill-after=2 3 docker ps -aq --filter "name=^/$container$") || return 1
   [[ -z "$remaining" ]]
 }
 finish() {
@@ -24,7 +24,7 @@ finish() {
 trap finish EXIT
 trap 'exit 143' TERM INT
 reap || exit 1
-active=$(timeout 3 docker ps -aq --filter 'name=^/plus-codex$') || exit 1
+active=$(timeout --kill-after=2 3 docker ps -aq --filter 'name=^/plus-codex$') || exit 1
 [[ -z "$active" ]] || {
   echo "CODEX_JOB_CONTAINER_PRESENT: refusing workspace cleanup." >&2
   exit 1
