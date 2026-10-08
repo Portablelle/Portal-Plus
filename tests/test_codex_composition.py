@@ -76,3 +76,17 @@ class CodexCompositionTests(unittest.TestCase):
         self.refresh()
         with self.assertRaisesRegex(ValueError, 'Incomplete'):
             compose.verify_delivery(self.source, self.commit)
+
+    def test_unsupported_native_asset_is_rejected_before_replacing_portal(self):
+        portal = self.base / 'portal'
+        shutil.copytree(ROOT / 'vps-site', portal)
+        before = (portal / 'manifest.json').read_bytes()
+        path = self.source / 'apps/codex/manifest.json'
+        manifest = json.loads(path.read_text())
+        manifest['native'].append(dict(manifest['native'][0], path='assets/new-upstream-asset.bin'))
+        path.write_text(json.dumps(manifest))
+        self.refresh()
+        with self.assertRaisesRegex(ValueError, 'Unsupported Codex installer paths'):
+            compose.compose(portal, self.source, self.commit)
+        self.assertEqual((portal / 'manifest.json').read_bytes(), before)
+        validator.verify(portal)

@@ -36,14 +36,45 @@ def verify_delivery(source, commit):
     required = {'apps/codex/' + name for name in ('manifest.json', 'LICENSE', 'NOTICE.md', 'codex-source.tar.gz')}
     if not required.issubset(actual) or 'src/codex-payload.js' not in actual:
         raise ValueError('Incomplete Codex delivery')
-    manifest = json.loads((source / 'apps/codex/manifest.json').read_text())
+    manifest_path = source / 'apps/codex/manifest.json'
+    if manifest_path.stat().st_size > 256 * 1024:
+        raise ValueError('Codex manifest exceeds installer limit')
+    manifest = json.loads(manifest_path.read_text())
     if manifest['version'] != record.get('version'):
         raise ValueError('Codex version mismatch')
-    if (manifest.get('schema') != 1 or manifest.get('titleId') != 'PPSA99105' or
-            not re.fullmatch(r'\d+\.\d+\.\d+', manifest['version']) or
-            not re.fullmatch('[a-f0-9]{64}', manifest.get('serviceBuild', '')) or
-            len(manifest['service']) != 1 or manifest['service'][0]['path'] != 'assistant-service.elf'):
+    native = manifest.get('native')
+    service = manifest.get('service')
+    required_native = {'assets/ui-font.bin', 'eboot.bin', 'sce_module/libc.prx',
+                       'sce_sys/icon0.png', 'sce_sys/param.json'}
+    models = {'assets/ggml-base.bin', 'assets/ggml-small-q5_1.bin'}
+    if (type(manifest.get('schema')) is not int or manifest['schema'] != 1 or
+            manifest.get('titleId') != 'PPSA99105' or
+            not isinstance(manifest['version'], str) or
+            not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', manifest['version']) or
+            not isinstance(manifest.get('serviceBuild'), str) or
+            not re.fullmatch('[a-f0-9]{64}', manifest['serviceBuild']) or
+            type(manifest.get('chunkSize')) is not int or manifest['chunkSize'] != 1048576 or
+            not isinstance(native, list) or len(native) > 128 or
+            not isinstance(service, list) or len(service) != 1 or
+            any(not isinstance(f, dict) or not isinstance(f.get('path'), str) for f in native + service)):
         raise ValueError('Invalid Codex manifest')
+    native_paths = [f['path'] for f in native]
+    if (len(set(native_paths)) != len(native_paths) or
+            not required_native.issubset(native_paths) or
+            sum(path in models for path in native_paths) != 1 or
+            any(path not in required_native | models and
+                not re.fullmatch(r'release/(?:[A-Za-z0-9_-]+/)*[A-Za-z0-9_.-]+', path)
+                for path in native_paths) or
+            any(part in ('.', '..') for path in native_paths for part in path.split('/')) or
+            service[0]['path'] != 'assistant-service.elf'):
+        raise ValueError('Unsupported Codex installer paths')
+    for entry in native + service:
+        if (type(entry.get('size')) is not int or not 1 <= entry['size'] <= 256 * 1024 * 1024 or
+                not isinstance(entry.get('sha256'), str) or not re.fullmatch('[a-f0-9]{64}', entry['sha256']) or
+                not isinstance(entry.get('chunks'), list) or
+                len(entry['chunks']) != (entry['size'] + manifest['chunkSize'] - 1) // manifest['chunkSize'] or
+                any(not isinstance(chunk, str) or not re.fullmatch('[a-f0-9]{64}', chunk) for chunk in entry['chunks'])):
+            raise ValueError('Invalid Codex installer file')
     physical = {f['path']: f for f in manifest['files']}
     if len(physical) != len(manifest['files']) or manifest.get('chunkSize') != 1048576:
         raise ValueError('Invalid Codex block inventory')
@@ -51,7 +82,7 @@ def verify_delivery(source, commit):
     for entry in manifest['native'] + manifest['service']:
         digest = hashlib.sha256()
         size = 0
-        for chunk in entry['chunks']:
+        for index, chunk in enumerate(entry['chunks']):
             if not re.fullmatch('[a-f0-9]{64}', chunk):
                 raise ValueError('Invalid Codex block hash')
             name = 'chunks/' + chunk + '.bin'
@@ -59,7 +90,8 @@ def verify_delivery(source, commit):
             if not block or block['sha256'] != chunk:
                 raise ValueError('Missing Codex block')
             data = (source / 'apps/codex' / name).read_bytes()
-            if (len(data) != block['size'] or not 0 < len(data) <= manifest['chunkSize'] or
+            if (len(data) != block['size'] or
+                    len(data) != min(manifest['chunkSize'], entry['size'] - index * manifest['chunkSize']) or
                     hashlib.sha256(data).hexdigest() != chunk):
                 raise ValueError('Invalid Codex block size')
             digest.update(data)
