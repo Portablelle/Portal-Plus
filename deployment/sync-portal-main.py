@@ -123,7 +123,7 @@ def reconcile_activation(state, root):
     current = root / 'current'
     if current_is_release(current, target):
         record = deployment_record(commit, target, previous)
-        record.update({k: pending[k] for k in ('portalCommit', 'bottyCommit') if k in pending})
+        record.update({k: pending[k] for k in ('portalCommit', 'bottyCommit', 'codexCommit') if k in pending})
         write_json_atomically(state / 'last-deploy.json', record)
     pending_path.unlink()
 
@@ -143,13 +143,22 @@ def reconcile_deploy_record(state, commit, target):
         previous = existing['previous']
     expected = deployment_record(commit, target, previous)
     if existing:
-        expected.update({k: existing[k] for k in ('portalCommit', 'bottyCommit') if k in existing and existing.get('commit') == commit})
+        expected.update({k: existing[k] for k in ('portalCommit', 'bottyCommit', 'codexCommit') if k in existing and existing.get('commit') == commit})
     if existing == expected:
         return
     write_json_atomically(record_path, expected)
 
 
-def sync_main(repository, state, root, botty_repository=None):
+def codex_remote_head(repository):
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9_.-]*', repository):
+        raise RuntimeError('Invalid Codex repository')
+    head = command(['gh', 'api', 'repos/' + repository + '/commits/main', '--jq', '.sha'])
+    if not re.fullmatch('[a-f0-9]{40}', head):
+        raise RuntimeError('Cannot resolve Codex main')
+    return head
+
+
+def sync_main(repository, state, root, botty_repository=None, codex_repository=None):
     state.mkdir(parents=True, exist_ok=True)
     root.mkdir(parents=True, exist_ok=True)
     releases = root / 'releases'
@@ -162,8 +171,9 @@ def sync_main(repository, state, root, botty_repository=None):
         reconcile_activation(state, root)
         portal_head = remote_head(repository)
         botty_head = remote_head(botty_repository) if botty_repository else None
-        head = (hashlib.sha256((portal_head + botty_head).encode()).hexdigest()[:40]
-                if botty_head else portal_head)
+        codex_head = codex_remote_head(codex_repository) if codex_repository else None
+        head = (hashlib.sha256((portal_head + (botty_head or '') + (codex_head or '')).encode()).hexdigest()[:40]
+                if botty_head or codex_head else portal_head)
         current = root / 'current'
         target = releases / ('main-' + head)
         if current_is_release(current, target):
@@ -192,6 +202,34 @@ def sync_main(repository, state, root, botty_repository=None):
                 command([sys.executable, str(source / 'scripts/compose-portal.py'),
                          '--root', str(source / 'vps-site'), '--botty', str(botty_source),
                          '--commit', botty_head])
+            if codex_head:
+                delivery = source / 'codex'
+                delivery.mkdir()
+                asset_size = command(['gh', 'api', 'repos/' + codex_repository + '/releases/tags/portal-' + codex_head,
+                                      '--jq', '[.assets[] | select(.name == "codex-portal.tar.gz") | .size] | if length == 1 then .[0] else null end'])
+                if not asset_size.isdecimal() or not 0 < int(asset_size) <= 1024 * 1024 * 1024:
+                    raise RuntimeError('Invalid or oversized Codex release asset')
+                if shutil.disk_usage(state).free < int(asset_size) + 512 * 1024 * 1024:
+                    raise RuntimeError('Insufficient free space for Codex staging')
+                command(['gh', 'release', 'download', 'portal-' + codex_head,
+                         '--repo', codex_repository, '--pattern', 'codex-portal.tar.gz',
+                         '--dir', str(delivery)])
+                if (delivery / 'codex-portal.tar.gz').stat().st_size != int(asset_size):
+                    raise RuntimeError('Codex release asset size changed during download')
+                with tarfile.open(delivery / 'codex-portal.tar.gz') as archive:
+                    members = archive.getmembers()
+                    if (len(members) > 10000 or any(not (member.isfile() or member.isdir()) or
+                            member.size > 256 * 1024 * 1024 for member in members) or
+                            sum(member.size for member in members) > 2 * 1024 * 1024 * 1024):
+                        raise RuntimeError('Codex release archive exceeds staging limits')
+                    snapshot_size = sum(path.stat().st_size for path in (source / 'vps-site').rglob('*') if path.is_file())
+                    required_space = 3 * sum(member.size for member in members) + snapshot_size + 512 * 1024 * 1024
+                    if shutil.disk_usage(state).free < required_space:
+                        raise RuntimeError('Insufficient free space for Codex staging and export')
+                    archive.extractall(delivery / 'package', filter='data')
+                command([sys.executable, str(source / 'scripts/compose-codex.py'),
+                         '--root', str(source / 'vps-site'), '--codex', str(delivery / 'package'),
+                         '--commit', codex_head])
             validator = source / 'scripts/portal-manifest.py'
             with tempfile.TemporaryDirectory(prefix='.staging-', dir=releases) as staging:
                 export = Path(staging) / 'portal'
@@ -199,7 +237,8 @@ def sync_main(repository, state, root, botty_repository=None):
                          str(source / 'vps-site'), '--output', str(export)])
                 # A newer main commit must never be overwritten by a slow export.
                 if (remote_head(repository) != portal_head or
-                        botty_head and remote_head(botty_repository) != botty_head):
+                        botty_head and remote_head(botty_repository) != botty_head or
+                        codex_head and codex_remote_head(codex_repository) != codex_head):
                     return 'superseded'
                 if target.exists() or target.is_symlink():
                     if not target.is_dir() or target.is_symlink():
@@ -210,6 +249,8 @@ def sync_main(repository, state, root, botty_repository=None):
                 pending = deployment_record(head, target, previous)
                 if botty_head:
                     pending.update(portalCommit=portal_head, bottyCommit=botty_head)
+                if codex_head:
+                    pending.update(portalCommit=portal_head, codexCommit=codex_head)
                 write_json_atomically(state / 'activation-pending.json', pending)
                 next_link = root / '.current.next'
                 if next_link.is_symlink():
@@ -234,11 +275,13 @@ def main():
         'BOTTY_PORTAL_REPOSITORY', 'https://github.com/Portablelle/Portal-Plus.git'))
     parser.add_argument('--botty-repository', default=os.environ.get(
         'BOTTY_APP_REPOSITORY', 'https://github.com/Portablelle/Botty-Plus.git'))
+    parser.add_argument('--codex-repository', default=os.environ.get(
+        'CODEX_APP_REPOSITORY', 'Portablelle/Codex-PS5'))
     parser.add_argument('--state', type=Path, default=Path('/var/lib/botty-portal/split'))
     parser.add_argument('--root', type=Path, default=Path('/var/www/botty-ps5'))
     args = parser.parse_args()
     try:
-        print(sync_main(args.repository, args.state.resolve(), args.root.resolve(), args.botty_repository))
+        print(sync_main(args.repository, args.state.resolve(), args.root.resolve(), args.botty_repository, args.codex_repository))
     except (OSError, RuntimeError, subprocess.SubprocessError, tarfile.TarError) as error:
         print('Portal deployment failed: ' + str(error), file=sys.stderr)
         if isinstance(error, subprocess.CalledProcessError):

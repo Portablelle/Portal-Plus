@@ -2,14 +2,18 @@ import { sha256 } from './transmission.js';
 export const NATIVE = '/data/homebrew/PPSA99105';
 export const SERVICE = '/data/codex-ps5/payloads/assistant-service';
 export const UPDATE = '/data/codex-ps5/installer';
-const HASH = '9265bcdcdbf76dc9498767173a4e513ad62705c0d8418792920fa4a8cb835681';
-const FILES = ['assets/ggml-base.bin', 'assets/ui-font.bin', 'eboot.bin', 'sce_module/libc.prx', 'sce_sys/icon0.png', 'sce_sys/param.json'];
+const HASH = '49730848c216d25041e7548d919678f34300c743f2dd1cbb4a82fdf95a76eb18';
+const FILES = ['assets/ui-font.bin', 'eboot.bin', 'sce_module/libc.prx', 'sce_sys/icon0.png', 'sce_sys/param.json'];
 const encoder = new TextEncoder(), decoder = new TextDecoder();
 const hex = x => /^[a-f0-9]{64}$/.test(x);
 export function validatePackage(m) {
   if (m.schema !== 1 || m.titleId !== 'PPSA99105' || !/^\d+\.\d+\.\d+$/.test(m.version) || !hex(m.serviceBuild) || m.chunkSize !== 1048576 ||
-      !Array.isArray(m.native) || !Array.isArray(m.service) || m.native.length !== FILES.length || m.service.length !== 1 ||
-      new Set(m.native.map(f => f.path)).size !== FILES.length || m.native.some(f => !FILES.includes(f.path)) || m.service[0].path !== 'assistant-service.elf')
+      !Array.isArray(m.native) || !Array.isArray(m.service) || m.native.length > 128 || m.service.length !== 1 ||
+      new Set(m.native.map(f => f.path)).size !== m.native.length || FILES.some(path => !m.native.some(f => f.path === path)) ||
+      m.native.filter(f => ['assets/ggml-base.bin', 'assets/ggml-small-q5_1.bin'].includes(f.path)).length !== 1 ||
+      m.native.some(f => !FILES.includes(f.path) && !['assets/ggml-base.bin', 'assets/ggml-small-q5_1.bin'].includes(f.path) &&
+        !/^release\/(?:[A-Za-z0-9_-]+\/)*[A-Za-z0-9_.-]+$/.test(f.path)) ||
+      m.native.some(f => f.path.split('/').some(part => part === '.' || part === '..')) || m.service[0].path !== 'assistant-service.elf')
     throw Error('Unexpected Codex package.');
   for (const f of [...m.native, ...m.service]) {
     if (!Number.isSafeInteger(f.size) || f.size < 1 || f.size > 256 * 1024 * 1024 || !hex(f.sha256) ||

@@ -3,13 +3,32 @@
 set -euo pipefail
 umask 077
 slot=$1
-[[ $slot == botty || $slot == portal ]] || exit 2
+[[ $slot == botty || $slot == portal || $slot == codex ]] || exit 2
 container=plus-$slot
 network=plus-ci-$slot
+image=plus-runner:latest
+home_mount=(--tmpfs /home/runner:rw,exec,nosuid,nodev,size=4g,uid=1001,gid=1001,mode=0700)
+if [[ $slot == codex ]]; then
+  image=codex-runner:latest
+  workspace=/home/gh-runner/codex-workspace
+  mountpoint -q "$workspace" && [[ $(findmnt -n -o FSTYPE --target "$workspace") == ext4 ]] || {
+    echo "CODEX_WORKSPACE_NOT_READY: provision the dedicated bounded filesystem first." >&2
+    exit 1
+  }
+  home_mount=(--mount "type=bind,src=$workspace,dst=/home/runner")
+fi
 state="${XDG_RUNTIME_DIR:?}/plus-runner-$slot"
 mkdir -p "$state"
 runner_id=
 env_file=
+admission_locked=false
+release_admission() {
+  if $admission_locked; then
+    flock -u 8 || true
+    exec 8>&-
+    admission_locked=false
+  fi
+}
 unregister() {
   if [[ -n "$runner_id" ]]; then
     if ! sudo -n /usr/local/sbin/plus-runner-api "$slot" delete "$runner_id"; then
@@ -21,10 +40,14 @@ unregister() {
   rm -f "$state/runner-id"
 }
 cleanup() {
+  release_admission
   [[ -z "$env_file" ]] || rm -f "$env_file"
   timeout 25 docker stop --time 20 "$container" >/dev/null 2>&1 || true
   timeout 10 docker rm -f "$container" >/dev/null 2>&1 || true
   unregister || true
+  if [[ $slot == codex ]]; then
+    bash "$(dirname "$0")/clean-codex-workspace.sh" || true
+  fi
 }
 trap 'exit 0' TERM INT
 trap cleanup EXIT
@@ -63,6 +86,11 @@ while true; do
     continue
   fi
   docker rm -f "$container" >/dev/null 2>&1 || true
+  if [[ $slot == codex ]] && ! bash "$(dirname "$0")/clean-codex-workspace.sh"; then
+    echo "CODEX_WORKSPACE_CLEANUP_FAILED" >&2
+    backoff
+    continue
+  fi
   if ! reply=$(sudo -n /usr/local/sbin/plus-runner-api "$slot" create); then
     echo "JIT_REGISTRATION_FAILED: retrying in $retry_delay s; check the broker error above." >&2
     backoff
@@ -86,26 +114,40 @@ while true; do
   printf 'ACTIONS_RUNNER_INPUT_JITCONFIG=%s\n' "$jit_config" > "$env_file"
   unset jit_config
   unset reply
+  if [[ $slot == codex ]]; then
+    exec 8>"${XDG_RUNTIME_DIR}/plus-runner-codex-cleanup.lock"
+    if ! flock -w 5 8; then
+      exec 8>&-
+      rm -f "$env_file"
+      env_file=
+      unregister || true
+      backoff
+      continue
+    fi
+    admission_locked=true
+  fi
   if ! docker create --name "$container" --env-file "$env_file" \
     --env HOME=/home/runner --env RUNNER_MANUALLY_TRAP_SIG=1 --env AGENT_TOOLSDIRECTORY=/home/runner/_toolcache \
     --env RUNNER_TOOL_CACHE=/home/runner/_toolcache --network "$network" \
     --cpus 4 --memory 8g --memory-swap 8g --pids-limit 4096 \
     --read-only --cap-drop ALL --security-opt no-new-privileges \
-    --tmpfs /home/runner:rw,exec,nosuid,nodev,size=4g,uid=1001,gid=1001,mode=0700 \
+    "${home_mount[@]}" \
     --tmpfs /tmp:rw,exec,nosuid,nodev,size=2g,mode=1777 \
     --log-driver local --log-opt max-size=10m --log-opt max-file=2 \
-    --entrypoint bash plus-runner:latest -c '
+    --entrypoint bash "$image" -c '
       set -euo pipefail
       cp -a /opt/actions-runner/. /home/runner/
       cp -a /opt/hostedtoolcache /home/runner/_toolcache
       exec ./run.sh
     ' >/dev/null; then
+    release_admission
     rm -f "$env_file"
     env_file=
     unregister || true
     backoff
     continue
   fi
+  release_admission
   rm -f "$env_file"
   env_file=
   docker start --attach "$container" &
@@ -113,6 +155,11 @@ while true; do
   wait $! || session_status=$?
   docker rm -f "$container" >/dev/null 2>&1 || true
   unregister || true
+  if [[ $slot == codex ]] && ! bash "$(dirname "$0")/clean-codex-workspace.sh"; then
+    echo "CODEX_WORKSPACE_CLEANUP_FAILED" >&2
+    backoff
+    continue
+  fi
   if ((session_status != 0)); then
     echo "RUNNER_SESSION_FAILED: exit $session_status" >&2
     backoff
