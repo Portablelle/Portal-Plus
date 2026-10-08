@@ -21,6 +21,6 @@ DOCKER_BUILDKIT=0 docker build --cpu-period 100000 --cpu-quota 200000 --memory 4
   --build-arg "PLUS_RUNNER_IMAGE=$base" --tag codex-runner:candidate "$context"
 docker run --rm --user 1001 --read-only --cap-drop ALL --security-opt no-new-privileges \
   --network none --cpus 1 --memory 512m --memory-swap 512m --pids-limit 128 codex-runner:candidate \
-  bash -c 'set -e; clang-18 --version; clang-19 --version; cmake --version; ninja --version; node --version; rustc --version; gh --version; g++ --version; test -x /opt/ps5-payload-sdk/bin/prospero-clang; rustup target list --installed | grep -qx x86_64-unknown-freebsd; test -f "$(rustc --print sysroot)/lib/rustlib/src/rust/library/std/src/sys/fs/unix.rs"'
+  bash -c 'set -e; clang-18 --version; clang-19 --version; cmake --version; ninja --version; node --version; rustc --version; gh --version; g++ --version; rsync --version; test -x /opt/ps5-payload-sdk/bin/prospero-clang; rustup target list --installed | grep -qx x86_64-unknown-freebsd; test -f "$(rustc --print sysroot)/lib/rustlib/src/rust/library/std/src/sys/fs/unix.rs"'
 docker tag codex-runner:candidate codex-runner:latest
 docker tag codex-runner:candidate "codex-runner:toolchain-$toolchain_sha"

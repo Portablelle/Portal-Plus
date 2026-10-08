@@ -31,7 +31,7 @@ RUN useradd --create-home --uid 1001 runner \
     && git config --system init.defaultBranch main
 ENV CARGO_HOME=/home/runner/.cargo
 ENV AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache RUNNER_TOOL_CACHE=/opt/hostedtoolcache
-RUN apt-get update && apt-get install -y --no-install-recommends gh build-essential \
+RUN apt-get update && apt-get install -y --no-install-recommends gh build-essential rsync \
     && rm -rf /var/lib/apt/lists/*
 USER runner
 WORKDIR /home/runner
