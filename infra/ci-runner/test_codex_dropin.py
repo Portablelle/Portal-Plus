@@ -24,11 +24,11 @@ else:
 class CodexDropinTests(unittest.TestCase):
     def test_additive_installer_installs_only_codex_dropin_before_reload(self):
         installer = (ROOT / "install-host.sh").read_text()
-        start = installer.index("if $add_codex; then\n  sudo install -d")
-        end = installer.index("\nfi", start) + len("\nfi")
-        self.assertLess(end, installer.index("systemctl --user daemon-reload"))
-        for additive in (True, False):
-            with self.subTest(additive=additive), tempfile.TemporaryDirectory() as directory:
+        start = installer.index('for slot in "${slots[@]}"; do\n  if [[ ${slot%-2} == codex ]]; then')
+        end = installer.index("\ndone", start) + len("\ndone")
+        self.assertLess(end, installer.rindex("systemctl --user daemon-reload"))
+        for slots in (("codex",), ("botty", "portal"), ("codex-2",), ("codex", "codex-2")):
+            with self.subTest(slots=slots), tempfile.TemporaryDirectory() as directory:
                 root = Path(directory)
                 units = root / "units"
                 units.mkdir()
@@ -36,17 +36,18 @@ class CodexDropinTests(unittest.TestCase):
                 sudo.write_text(SUDO)
                 sudo.chmod(0o755)
                 fragment = installer[start:end].replace("/home/gh-runner/.config/systemd/user", str(units))
-                result = subprocess.run(["bash", "-c", "set -euo pipefail\nadd_codex=$1\n" + fragment,
-                                         "bash", "true" if additive else "false"], cwd=ROOT,
+                result = subprocess.run(["bash", "-c", 'set -euo pipefail\nslots=("$@")\natomic_install() { sudo install -o "$1" -g "$2" -m "$3" "$4" "$5"; }\n' + fragment,
+                                         "bash", *slots], cwd=ROOT,
                                         env={**os.environ, "PATH": f"{root}:{os.environ['PATH']}",
                                              "FIXTURE_UNITS": str(units)},
                                         text=True, capture_output=True, timeout=10)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 files = [path.relative_to(units).as_posix() for path in units.rglob("*") if path.is_file()]
-                self.assertEqual(files, ["plus-runner@codex.service.d/timeout.conf"] if additive else [])
-                if additive:
+                expected = [f"plus-runner@{slot}.service.d/timeout.conf" for slot in slots if slot.startswith("codex")]
+                self.assertEqual(sorted(files), sorted(expected))
+                for filename in expected:
                     config = configparser.ConfigParser()
-                    config.read(units / "plus-runner@codex.service.d" / "timeout.conf")
+                    config.read(units / filename)
                     self.assertEqual(config.getint("Service", "TimeoutStopSec"), 240)
         template = configparser.ConfigParser(strict=False)
         template.read(ROOT / "plus-runner@.service")

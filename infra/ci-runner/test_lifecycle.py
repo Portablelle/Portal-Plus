@@ -25,7 +25,7 @@ class LifecycleTests(unittest.TestCase):
         self.state = self.root / "state.json"
         self.state.write_text(json.dumps({"hold_slot": True}))
         self.log = self.root / "commands.jsonl"
-        for name in ("docker", "sudo", "jq", "timeout", "tail", "sleep", "mountpoint", "findmnt", "flock", "systemctl", "mv"):
+        for name in ("cat", "docker", "sudo", "jq", "timeout", "tail", "sleep", "mountpoint", "findmnt", "flock", "systemctl", "mv"):
             command = self.root / name
             command.write_text(MOCK)
             command.chmod(0o755)

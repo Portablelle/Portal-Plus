@@ -1,2 +1,2 @@
 # The root-owned broker itself validates every argument and restricts the repositories.
-gh-runner ALL=(root) NOPASSWD: /usr/local/sbin/plus-runner-api
+gh-runner ALL=(root) NOPASSWD: /usr/local/sbin/plus-runner-api botty create, /usr/local/sbin/plus-runner-api botty delete *, /usr/local/sbin/plus-runner-api botty-2 create, /usr/local/sbin/plus-runner-api botty-2 delete *, /usr/local/sbin/plus-runner-api portal create, /usr/local/sbin/plus-runner-api portal delete *, /usr/local/sbin/plus-runner-api portal-2 create, /usr/local/sbin/plus-runner-api portal-2 delete *, /usr/local/sbin/plus-runner-api codex create, /usr/local/sbin/plus-runner-api codex delete *, /usr/local/sbin/plus-runner-api codex-2 create, /usr/local/sbin/plus-runner-api codex-2 delete *

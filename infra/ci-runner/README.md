@@ -28,13 +28,57 @@ Each slot has its own Docker bridge network, with no published ports and no
 connection to Ciaobella's Docker network. Public PR code retains outbound
 Internet access to fetch dependencies.
 
+Each family supports exactly two instances: `botty`/`botty-2`,
+`portal`/`portal-2`, and `codex`/`codex-2`. The unnumbered name is slot one;
+`-1`, other numbers, zero padding, paths and extra arguments are rejected.
+Legacy service, container, bridge, journal, lock and scratch names are retained.
+The second instance appends `-2` to those identities, including its independent
+Codex backing image `workspace-2.img`, mount `codex-workspace-2`, cleanup
+container and cleanup/admission lock. Both instances keep the same repository
+allowlist and workflow labels. There is no cross-instance cleanup lock.
+
 The job runs as UID 1001 with no capabilities and no privilege escalation.
 The root filesystem is read-only. Writable data is restricted to tmpfs:
 `/home/runner` (4 GiB, including a fresh copy of the runner and Node cache),
 `/tmp` (2 GiB), and Docker's default `/dev/shm` (64 MiB). Those mounts count
-against the 8 GiB memory limit; swap is disabled for the job. CPU is capped at
-4, processes at 4096. Docker logs rotate at 10 MiB, keeping two files, so PR
+against the light runner's 4 GiB memory limit; swap is disabled for the job.
+Light CPU is capped at 2, processes at 4096. Docker logs rotate at 10 MiB, keeping two files, so PR
 output cannot grow the host's Docker graph without bound.
+
+### Aggregate budget and activation approval
+
+New Plus job and cleanup containers explicitly use Docker's systemd cgroup
+parent `plusci.slice`, not the slot service's process cgroup. The slice has
+`MemoryHigh=14G`, `MemoryMax=16G`, no swap, and a 600% CPU quota. This leaves
+15 GiB of the 31 GiB host outside the Plus ceiling for the OS, applications,
+Ciaobella and the rootless daemon; it does not reserve that memory for them.
+Idle listeners do not reserve job capacity. The sum of all six individual job
+ceilings is 32 GiB, so six simultaneous peak builds do **not** fit. MemoryHigh
+throttles under aggregate pressure; MemoryMax can OOM/fail CI jobs to protect
+the host. This is a containment bound, not a scheduler or a guarantee that
+every concurrent workload succeeds. Light limits are explicitly reduced from
+the previous 4 CPU/8 GiB; Codex retains its verified 4 CPU/8 GiB build ceiling.
+
+Admission fails closed unless Docker uses systemd/cgroup v2 and the live slice
+files match all four limits. It also checks all six Plus service entrypoints
+and container parents: an old service is rejected even during its between-job
+container gap, and a running container must have its actual Docker scope
+inside the slice. The complete admission check has a 25-second deadline plus
+two-second forced-kill grace, preserving the Codex stop budget.
+Installation additionally starts a bounded,
+credential-free, network-disabled probe with no host mounts and verifies its
+actual `/proc/<pid>/cgroup` is a Docker scope inside that slice, then removes it.
+The target host must support delegated CPU/memory/pids controllers. A local
+macOS fixture cannot prove Linux delegation: successful disposable-probe
+verification on dedie is required before activation. The installer requires
+explicit `PLUS_CI_BUDGET_APPROVED=yes` after PR review and user approval.
+Existing containers are not moved or updated, and unrelated Ciaobella scopes
+and the whole `user-1001.slice` are not constrained by this installation.
+Legacy services/containers outside the verified parent block new job admission
+and additional-slot activation. Installation can publish the validated release
+and updated unit definitions but exits before enabling/starting extra slots
+while that overlap remains. It never applies new memory caps to active legacy
+jobs. The 16 GiB aggregate is not claimed to cover an out-of-slice legacy job.
 
 The immutable image includes Clang, libcurl, zlib development headers,
 Python/Pillow, and Node 24. `AGENT_TOOLSDIRECTORY` and `RUNNER_TOOL_CACHE`
@@ -42,8 +86,8 @@ point to the fresh writable copy of the preinstalled Node tool cache.
 
 ### Codex toolchain and scratch
 
-The `codex` slot uses the independent `codex-runner:latest` image. It retains
-the 4 CPU, 8 GiB RAM/no swap, PID, capability, network, and log limits above.
+The `codex` and `codex-2` slots use the independent `codex-runner:latest` image. Each retains
+4 CPU, 8 GiB RAM/no swap, and the PID, capability, network and log limits above.
 Its home is a dedicated 16 GiB ext4 loop filesystem instead of the 4 GiB tmpfs;
 `/tmp` remains bounded tmpfs. The image contains Clang/LLVM/lld 18 and 19,
 CMake/Ninja, Python jsonschema/jinja2, Autotools, SSL/libclang development
@@ -132,23 +176,66 @@ a dedicated sysctl file. Builds require cgroup v2, the systemd cgroup driver,
 and cpu/memory/pids delegated to gh-runner; the build script checks these
 before requesting version discovery or invoking Docker build.
 
-Run `bash infra/ci-runner/install-host.sh` from a reviewed checkout **on dedie**.
+After approval, run `PLUS_CI_BUDGET_APPROVED=yes bash infra/ci-runner/install-host.sh` from a reviewed checkout **on dedie**.
 It installs the root-owned broker and restricted sudoers rule, installs the
-user units, builds the image, restarts both slots to replace old runner processes,
-and enables the weekly timer. Run installation only when jobs may be stopped;
-reinstallation also restarts the slots. The configured host UID must be 1001.
+user units, builds the image, starts missing light slots without restarting
+active services, and enables the weekly timer. The configured host UID must be 1001.
 It also runs `sudo loginctl enable-linger gh-runner`, so these user services
 and the timer run after logout and reboot.
 
 After the independent Codex image has been built, run
-`bash infra/ci-runner/install-host.sh --add-codex` to provision scratch, preflight
+`PLUS_CI_BUDGET_APPROVED=yes bash infra/ci-runner/install-host.sh --add-codex` to provision scratch, preflight
 only Codex JIT write/delete access, and enable/start only `plus-runner@codex`.
 This additive mode skips APT installation and Plus image rebuilding, does not
 restart Botty/Portal or an already running Codex service, and preserves their
 processes. It updates the shared argument-validated broker and reviewed slot
-scripts through `install`; existing slot processes remain running. The default
-installer still installs/restarts only Botty/Portal, without a Codex image
-prerequisite. Do not use that default during active CI jobs.
+scripts only after staged budget/placement verification succeeds. The complete
+bundle is retained in `~/plus-runner/releases/` and published through one atomic
+`~/plus-runner/current` symlink replacement. New slots pin the physical release
+directory for every helper they subsequently load. Existing unversioned
+top-level scripts are left untouched, so active legacy Bash readers and their
+helpers keep the original files rather than seeing a truncated/mixed revision.
+Failed probe validation leaves live shared cleanup/slot helpers untouched.
+An already-active aggregate slice is verified rather than reconfigured; a
+conflicting live budget aborts installation without applying new limits.
+The default installer starts only missing Botty/Portal services, without a
+Codex image prerequisite. Prefer additive mode during active CI jobs.
+
+Use `PLUS_CI_BUDGET_APPROVED=yes bash infra/ci-runner/install-host.sh --add-slot
+botty-2` (or `portal-2`/`codex-2`) to add exactly that instance without APT,
+image rebuilding, or service restarts. `--add-slot codex` also supports the
+legacy first instance. Each Codex instance receives its own 240-second stop
+drop-in; the template's 90-second light deadline is unchanged. Provisioning
+the second Codex filesystem never reformats or remounts the first. Installation
+does not remove stopped instances, applications or services. Quiesce only the
+target service when explicitly authorized; targeted stop/cleanup uses only
+that instance's container, journal and scratch.
+
+### Non-disruptive legacy migration
+
+1. With explicit budget approval, run the additive installer from the reviewed
+   checkout. It validates the disposable probe, publishes the coherent release
+   and unit definitions, then reports `PLUS_LEGACY_MIGRATION_REQUIRED` if old
+   Plus services/containers remain. No extra runner service is enabled or
+   started in that case, and existing jobs keep their original limits.
+2. Let active jobs finish. Confirm each legacy runner is idle in GitHub and
+   coordinate queued submissions before quiescing only that instance with
+   `systemctl --user stop plus-runner@<family>`. Its targeted stop helper revokes
+   its unused identity, removes its container and cleans only its own scratch;
+   never delete backing images, journals retained after deletion failure, or
+   unrelated Ciaobella containers/services.
+3. Start the retired unnumbered service with the updated unit. It uses the new
+   release and waits without admitting a job while any other old Plus service
+   or out-of-slice container remains. Repeat for the remaining idle legacy
+   instances; do not restart a busy runner to speed up migration.
+4. Rerun the additive installer to activate the requested second instances only
+   after the containment guard passes. The units require and order after
+   `plusci.slice`, so the same budget starts before job admission after reboot.
+
+Keep old release directories while any process may still load their helpers;
+the installer never prunes them automatically. These changes do not alter
+deployment/archive runners, move active containers, or constrain all of UID
+1001's Docker workloads.
 
 The weekly image timer validates version discovery and official download
 hashes before building. Only superseded Plus runner images are cleaned up;
@@ -204,5 +291,5 @@ at five minutes, resetting after a completed runner session.
 
 Inspect logs as gh-runner with `XDG_RUNTIME_DIR=/run/user/1001`:
 `journalctl --user -u plus-runner@botty -u plus-runner@portal`.
-For Codex use `journalctl --user -u plus-runner@codex`.
+For Codex use `journalctl --user -u plus-runner@codex -u plus-runner@codex-2`.
 Never commit GitHub tokens, JIT configurations, or runner credential files.
