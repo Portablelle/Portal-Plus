@@ -1,0 +1,11 @@
+[Unit]
+Description=Aggregate resource budget for new Plus CI containers
+
+[Slice]
+MemoryAccounting=yes
+MemoryHigh=14G
+MemoryMax=16G
+MemorySwapMax=0
+CPUAccounting=yes
+CPUQuota=600%
+CPUQuotaPeriodSec=100ms

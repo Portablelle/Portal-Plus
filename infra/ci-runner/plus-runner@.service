@@ -1,13 +1,14 @@
 [Unit]
 Description=GitHub Actions runner slot %i (Plus repositories)
-After=docker.service
+After=docker.service plusci.slice
 Wants=docker.service
+Requires=plusci.slice
 
 [Service]
 Environment=PATH=%h/bin:/usr/local/bin:/usr/bin:/bin
 Environment=DOCKER_HOST=unix://%t/docker.sock
-ExecStart=%h/plus-runner/slot.sh %i
-ExecStopPost=%h/plus-runner/stop-slot.sh %i
+ExecStart=%h/plus-runner/current/slot.sh %i
+ExecStopPost=/usr/bin/python3 %h/plus-runner/post-stop.py stop %i
 KillMode=mixed
 TimeoutStopSec=90
 LogRateLimitIntervalSec=30s

@@ -1,8 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
-[[ $# == 0 ]] || exit 2
-image=/var/lib/plus-runner-codex/workspace.img
-workspace=/home/gh-runner/codex-workspace
+script_dir=$(cd "$(dirname "$0")" && pwd -P)
+source "$script_dir/instance.sh" "${1-codex}"
+[[ $# -le 1 && $family == codex ]] || exit 2
+image=$image_file
 temporary=
 cleanup() {
   [[ -z "$temporary" ]] || sudo rm -f -- "$temporary"
@@ -21,7 +22,7 @@ if ! sudo test -e "$image" && ! sudo test -L "$image"; then
     echo "Codex scratch requires at least 20 GiB free disk." >&2
     exit 1
   }
-  temporary=$(sudo mktemp /var/lib/plus-runner-codex/.workspace.XXXXXX)
+  temporary=$(sudo mktemp "/var/lib/plus-runner-codex/.$slot-workspace.XXXXXX")
   sudo fallocate -l 16G "$temporary"
   sudo chmod 600 "$temporary"
   sudo mkfs.ext4 -q -m 0 "$temporary"
@@ -46,8 +47,8 @@ if ! mountpoint -q "$workspace"; then
   sudo install -d -o root -g root -m 755 "$workspace"
 fi
 entry="$image $workspace ext4 loop,nosuid,nodev 0 0"
-if ! grep -qF "$entry" /etc/fstab; then
-  if grep -qF "$workspace" /etc/fstab; then
+if ! grep -qxF "$entry" /etc/fstab; then
+  if awk -v target="$workspace" '$2 == target { found=1 } END { exit !found }' /etc/fstab; then
     echo "Conflicting Codex scratch mount in fstab; refusing to change it." >&2
     exit 1
   fi

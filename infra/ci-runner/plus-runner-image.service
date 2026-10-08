@@ -14,4 +14,4 @@ Restart=on-failure
 RestartSec=60
 Environment=PATH=%h/bin:/usr/local/bin:/usr/bin:/bin
 Environment=DOCKER_HOST=unix://%t/docker.sock
-ExecStart=%h/plus-runner/build-image.sh
+ExecStart=%h/plus-runner/current/build-image.sh

@@ -15,10 +15,11 @@ LABELS = {"botty": "botty-plus-ci", "portal": "portal-plus-ci", "codex": "codex-
 def main():
     if os.geteuid() != 0:
         raise SystemExit("Install this broker as root and invoke it through sudo.")
-    if len(sys.argv) not in (3, 4) or sys.argv[1] not in REPOSITORIES:
-        raise SystemExit("Usage: plus-runner-api <botty|portal|codex> <create|delete ID>")
+    if len(sys.argv) not in (3, 4) or not re.fullmatch(r"(?:botty|portal|codex)(?:-2)?", sys.argv[1]):
+        raise SystemExit("Usage: plus-runner-api <botty|portal|codex>[-2] <create|delete ID>")
     slot, operation = sys.argv[1:3]
-    path = f"repos/{REPOSITORIES[slot]}/actions/runners"
+    family = slot.removesuffix("-2")
+    path = f"repos/{REPOSITORIES[family]}/actions/runners"
     payload = None
     if operation == "create" and len(sys.argv) == 3:
         path += "/generate-jitconfig"
@@ -26,7 +27,7 @@ def main():
         payload = json.dumps({
             "name": f"dedie-{slot}-plus-{time.time_ns()}",
             "runner_group_id": 1,
-            "labels": ["self-hosted", "linux", "x64", LABELS[slot]],
+            "labels": ["self-hosted", "linux", "x64", LABELS[family]],
             "work_folder": "_work",
         })
     elif operation == "delete" and len(sys.argv) == 4 and re.fullmatch(r"[1-9][0-9]*", sys.argv[3]):

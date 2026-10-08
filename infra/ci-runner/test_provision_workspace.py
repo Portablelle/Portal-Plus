@@ -82,6 +82,10 @@ class WorkspaceProvisionTests(unittest.TestCase):
         source = source.replace("/var/lib/plus-runner-codex", str(self.state))
         source = source.replace("/home/gh-runner/codex-workspace", str(self.workspace))
         self.script.write_text(source.replace("/etc/fstab", str(self.fstab)))
+        instance = (ROOT / "instance.sh").read_text()
+        instance = instance.replace("/var/lib/plus-runner-codex", str(self.state))
+        instance = instance.replace("/home/gh-runner/codex-workspace", str(self.workspace))
+        (self.root / "instance.sh").write_text(instance)
         binaries = self.root / "bin"
         binaries.mkdir()
         for name in ("sudo", "install", "df", "fallocate", "chmod", "mkfs.ext4", "stat", "blkid",
@@ -93,8 +97,8 @@ class WorkspaceProvisionTests(unittest.TestCase):
         self.env = {**os.environ, "PATH": f"{binaries}:{os.environ['PATH']}",
                     "COMMAND_LOG": str(self.log), "FIXTURE_ROOT": str(self.root)}
 
-    def invoke(self, format_failure=False, publication_race="", free_bytes=100000000000):
-        return subprocess.run(["bash", str(self.script)], capture_output=True, text=True, timeout=20,
+    def invoke(self, format_failure=False, publication_race="", free_bytes=100000000000, slot=None):
+        return subprocess.run(["bash", str(self.script), *([slot] if slot is not None else [])], capture_output=True, text=True, timeout=20,
                               env={**self.env, "FORMAT_FAILURE": "1" if format_failure else "",
                                    "PUBLISH_RACE": publication_race, "FREE_BYTES": str(free_bytes)})
 
@@ -115,12 +119,12 @@ class WorkspaceProvisionTests(unittest.TestCase):
         result = self.invoke(format_failure=True)
         self.assertEqual(result.returncode, 9, result.stderr)
         self.assertFalse(self.image.exists())
-        self.assertEqual(list(self.state.glob(".workspace.*")), [])
+        self.assertEqual(list(self.state.glob(".*workspace.*")), [])
         result = self.invoke()
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.marker(), "ext4")
         self.assertEqual(self.image.stat().st_size, 17179869184)
-        self.assertEqual(list(self.state.glob(".workspace.*")), [])
+        self.assertEqual(list(self.state.glob(".*workspace.*")), [])
         publications = [command for command in self.commands() if command[0] == "ln"]
         self.assertEqual(len(publications), 1)
         self.assertNotEqual(publications[0][-2], str(self.image))
@@ -145,7 +149,7 @@ class WorkspaceProvisionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.marker(), "ext4-winner")
         self.assertEqual(str(self.image.stat().st_ino), (self.root / "winner-inode").read_text())
-        self.assertEqual(list(self.state.glob(".workspace.*")), [])
+        self.assertEqual(list(self.state.glob(".*workspace.*")), [])
         self.assertFalse(any(command[0] == "mv" for command in self.commands()))
 
     def test_concurrent_invalid_winner_fails_closed_without_overwrite(self):
@@ -154,7 +158,7 @@ class WorkspaceProvisionTests(unittest.TestCase):
         self.assertIn("CODEX_WORKSPACE_IMAGE_INVALID", result.stderr)
         self.assertEqual(self.marker(), "broken-winner")
         self.assertEqual(str(self.image.stat().st_ino), (self.root / "winner-inode").read_text())
-        self.assertEqual(list(self.state.glob(".workspace.*")), [])
+        self.assertEqual(list(self.state.glob(".*workspace.*")), [])
         self.assertFalse(any(command[0] in ("mount", "chown") for command in self.commands()))
 
     def test_wrong_size_is_rejected_without_changing_existing_image(self):
@@ -177,6 +181,36 @@ class WorkspaceProvisionTests(unittest.TestCase):
         self.assertEqual(sentinel.read_text(), "untouched")
         self.assertEqual(self.fstab.read_text(), fstab)
         self.assertFalse(any(command[0] in ("fallocate", "mkfs.ext4", "ln", "mount") for command in self.commands()))
+
+    def test_first_workspace_does_not_conflict_with_existing_second_mountpoint(self):
+        second_entry = f"{self.state}/workspace-2.img {self.workspace}-2 ext4 loop,nosuid,nodev 0 0\n"
+        self.fstab.write_text(second_entry)
+        result = self.invoke()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.fstab.read_text(), second_entry + f"{self.image} {self.workspace} ext4 loop,nosuid,nodev 0 0\n")
+
+    def test_exact_mountpoint_conflict_is_rejected_without_fstab_changes(self):
+        conflict = f"/other/image {self.workspace} ext4 loop,nosuid,nodev 0 0\n"
+        self.fstab.write_text(conflict)
+        self.make_image("ext4")
+        result = self.invoke()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Conflicting Codex scratch mount", result.stderr)
+        self.assertEqual(self.fstab.read_text(), conflict)
+
+    def test_second_filesystem_does_not_replace_first_image_or_scratch(self):
+        self.make_image("ext4")
+        inode = self.image.stat().st_ino
+        sentinel = self.workspace / "keep"
+        sentinel.write_text("first instance")
+        first_entry = self.fstab.read_text()
+        result = self.invoke(slot="codex-2")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.image.stat().st_ino, inode)
+        self.assertEqual(self.marker(), "ext4")
+        self.assertEqual(sentinel.read_text(), "first instance")
+        self.assertTrue((self.state / "workspace-2.img").is_file())
+        self.assertEqual(self.fstab.read_text(), first_entry + f"{self.state}/workspace-2.img {self.workspace}-2 ext4 loop,nosuid,nodev 0 0\n")
 
 
 if __name__ == "__main__":

@@ -1,10 +1,12 @@
 #!/usr/bin/env bash
 set -euo pipefail
-workspace=/home/gh-runner/codex-workspace
+script_dir=$(cd "$(dirname "$0")" && pwd -P)
+source "$script_dir/instance.sh" "${1-codex}"
+[[ $# -le 1 && $family == codex ]] || exit 2
 mountpoint -q "$workspace" && [[ $(findmnt -n -o FSTYPE --target "$workspace") == ext4 ]] || exit 1
-exec 9>"${XDG_RUNTIME_DIR:?}/plus-runner-codex-cleanup.lock"
+exec 9>"${XDG_RUNTIME_DIR:?}/plus-runner-$slot-cleanup.lock"
 flock -w 5 9 || exit 1
-container=plus-codex-cleanup
+container=plus-$slot-cleanup
 reap() {
   timeout --kill-after=2 3 docker stop --time 1 "$container" >/dev/null 2>&1 || true
   timeout --kill-after=2 5 docker rm -f "$container" >/dev/null 2>&1 || true
@@ -24,14 +26,14 @@ finish() {
 trap finish EXIT
 trap 'exit 143' TERM INT
 reap || exit 1
-active=$(timeout --kill-after=2 3 docker ps -aq --filter 'name=^/plus-codex$') || exit 1
+active=$(timeout --kill-after=2 3 docker ps -aq --filter "name=^/plus-$slot$") || exit 1
 [[ -z "$active" ]] || {
   echo "CODEX_JOB_CONTAINER_PRESENT: refusing workspace cleanup." >&2
   exit 1
 }
 timeout --kill-after=2 25 docker run --rm --name "$container" --network none --user 1001 --workdir / \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
-  --cpus 1 --memory 512m --memory-swap 512m --pids-limit 128 \
+  --cgroup-parent plusci.slice --cpus 1 --memory 512m --memory-swap 512m --pids-limit 128 \
   --log-driver local --log-opt max-size=10m --log-opt max-file=2 \
   --mount "type=bind,src=$workspace,dst=/home/runner" \
   --entrypoint python3 codex-runner:latest -I -S -c '

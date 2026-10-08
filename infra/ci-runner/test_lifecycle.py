@@ -8,7 +8,80 @@ import tempfile
 import time
 import unittest
 
-from test_cleanup import MOCK
+from test_cleanup import MOCK as CLEANUP_MOCK
+
+
+MOCK = """#!/usr/bin/env python3
+import json, os, pathlib, signal, subprocess, sys, time
+name = pathlib.Path(sys.argv[0]).name
+args = sys.argv[1:]
+unit = next((arg.split("=", 1)[1] for arg in args if arg.startswith("--unit=")), None)
+recovery = name == "systemd-run" or (name == "systemctl" and any("-recovery-" in arg for arg in args))
+if recovery:
+    root = pathlib.Path(os.environ["XDG_RUNTIME_DIR"])
+    with open(os.environ["COMMAND_LOG"], "a") as log:
+        log.write(json.dumps([name, *args]) + "\\n")
+    if name == "systemd-run":
+        assert "--property=KillMode=control-group" in args and "--property=KillSignal=SIGKILL" in args
+        command = args.index("/usr/bin/python3")
+        child = subprocess.Popen([sys.executable, *args[command + 1:]], start_new_session=True)
+        group = "/user.slice/user-1001.slice/user@1001.service/app.slice/" + unit
+        directory = root / "cgroups" / group.lstrip("/")
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / "cgroup.events").write_text("populated 1\\n")
+        metadata = root / (unit + ".json")
+        metadata.write_text(json.dumps({"pid": child.pid, "group": group, "active": True}))
+        status = child.wait()
+        (directory / "cgroup.events").write_text("populated 0\\n")
+        metadata.write_text(json.dumps({"pid": child.pid, "group": group, "active": False}))
+        sys.exit(status)
+    unit = next(arg for arg in args if "-recovery-" in arg)
+    metadata = root / (unit + ".json")
+    state = json.loads(metadata.read_text()) if metadata.exists() else None
+    if "stop" in args:
+        if state and state["active"]:
+            processes = subprocess.run(["ps", "-axo", "pid=,pgid=,stat="], capture_output=True, text=True, check=True).stdout
+            state["members"] = [int(line.split()[0]) for line in processes.splitlines() if len(line.split()) == 3 and line.split()[1] == str(state["pid"])]
+            try:
+                os.killpg(state["pid"], signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            deadline = time.monotonic() + 1
+            while True:
+                alive = [pid for pid in state["members"] if subprocess.run(["ps", "-o", "stat=", "-p", str(pid)], capture_output=True, text=True).stdout.strip().lstrip("Z") not in ("", "+", "s", "s+")]
+                if not alive:
+                    break
+                if time.monotonic() >= deadline:
+                    raise RuntimeError("recovery descendants did not quiesce: " + repr(alive))
+                time.sleep(0.01)
+            state["active"] = False
+            metadata.write_text(json.dumps(state))
+            (root / "cgroups" / state["group"].lstrip("/") / "cgroup.events").write_text("populated 0\\n")
+        sys.exit(0)
+    parent = "plus-runner@" + unit.removeprefix("plus-runner-").split("-recovery-", 1)[0] + ".service"
+    print("Id=" + unit + "\\nLoadState=" + ("loaded" if state else "not-found") + "\\nActiveState=" + ("active" if state and state["active"] else "inactive"))
+    print("BindsTo=" + (parent if state else "") + "\\nAfter=" + (parent if state else "") + "\\nControlGroup=" + (state["group"] if state else ""))
+    sys.exit(0)
+budget = name == "cat" or (name == "systemctl" and ("--property=Id" in args or "plusci.slice" in args)) or (name == "docker" and args[:2] == ["info", "--format"])
+if budget:
+    with open(os.environ["COMMAND_LOG"], "a") as log:
+        log.write(json.dumps([name, *args]) + "\\n")
+    if name == "cat":
+        values = {"memory.high": "15032385536", "memory.max": "17179869184", "memory.swap.max": "0", "cpu.max": "600000 100000"}
+        if args[0].startswith("/sys/fs/cgroup/"):
+            print(values[pathlib.Path(args[0]).name])
+        else:
+            sys.stdout.write(pathlib.Path(args[0]).read_text())
+    elif name == "systemctl" and "--property=Id" in args:
+        for unit in args:
+            if unit.startswith("plus-runner@"):
+                print("Id=" + unit + "\\nMainPID=0\\n")
+    elif name == "systemctl":
+        print("/user.slice/user-1001.slice/user@1001.service/plusci.slice")
+    else:
+        print("systemd 2")
+    sys.exit(0)
+exec(""" + repr(CLEANUP_MOCK) + ")\n"
 
 
 ROOT = Path(__file__).resolve().parent
@@ -25,7 +98,7 @@ class LifecycleTests(unittest.TestCase):
         self.state = self.root / "state.json"
         self.state.write_text(json.dumps({"hold_slot": True}))
         self.log = self.root / "commands.jsonl"
-        for name in ("docker", "sudo", "jq", "timeout", "tail", "sleep", "mountpoint", "findmnt", "flock", "systemctl", "mv"):
+        for name in ("cat", "docker", "sudo", "jq", "timeout", "tail", "sleep", "mountpoint", "findmnt", "flock", "systemctl", "systemd-run", "mv"):
             command = self.root / name
             command.write_text(MOCK)
             command.chmod(0o755)
@@ -45,7 +118,7 @@ class LifecycleTests(unittest.TestCase):
         env = dict(self.env)
         if invocation is not None:
             env["INVOCATION_ID"] = invocation
-        process = subprocess.Popen(["bash", str(ROOT / "slot.sh"), "codex"], env=env,
+        process = subprocess.Popen(["bash", str(getattr(self, "slot_script", ROOT / "slot.sh")), "codex"], env=env,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.addCleanup(self.stop_process, process)
         pending = self.root / "slot-pid.pending"

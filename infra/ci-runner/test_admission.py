@@ -12,6 +12,24 @@ MOCK = '''#!/usr/bin/env python3
 import fcntl, json, os, pathlib, subprocess, sys, time
 name = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
+if name == "systemctl" and "--property=Id" in args:
+    for unit in args:
+        if unit.startswith("plus-runner@"):
+            print("Id=" + unit + "\\nMainPID=0\\n")
+    sys.exit(0)
+if name == "cat":
+    values = {"memory.high": "15032385536", "memory.max": "17179869184", "memory.swap.max": "0", "cpu.max": "600000 100000"}
+    if args[0].startswith("/sys/fs/cgroup/"):
+        print(values[pathlib.Path(args[0]).name])
+    else:
+        sys.stdout.write(pathlib.Path(args[0]).read_text())
+    sys.exit(0)
+if name == "systemctl" and "plusci.slice" in args:
+    print("/user.slice/user-1001.slice/user@1001.service/plusci.slice")
+    sys.exit(0)
+if name == "docker" and args[:2] == ["info", "--format"]:
+    print("systemd 2")
+    sys.exit(0)
 root = pathlib.Path(os.environ["XDG_RUNTIME_DIR"])
 with open(root / "commands.jsonl", "a") as log:
     log.write(json.dumps([name, *args]) + "\\n")
@@ -22,7 +40,7 @@ def until(path):
             raise RuntimeError("admission fixture timed out")
         time.sleep(0.01)
 if name == "timeout":
-    command = next((index for index, arg in enumerate(args) if arg in ("docker", "sudo", "tail", "systemctl")), None)
+    command = next((index for index, arg in enumerate(args) if arg in ("cat", "docker", "sudo", "tail", "systemctl", "bash", "python3")), None)
     if command is None:
         raise RuntimeError("timeout fixture received no supported client: " + repr(args))
     sys.exit(subprocess.run(args[command:]).returncode)
@@ -79,7 +97,7 @@ class AdmissionTests(unittest.TestCase):
     def invoke(self, create_failure=False):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
-            for name in ("docker", "sudo", "jq", "timeout", "sleep", "mountpoint", "findmnt", "flock", "systemctl", "mv"):
+            for name in ("cat", "docker", "sudo", "jq", "timeout", "sleep", "mountpoint", "findmnt", "flock", "systemctl", "mv"):
                 command = root / name
                 command.write_text(MOCK)
                 command.chmod(0o755)

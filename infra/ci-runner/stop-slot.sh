@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # ExecStopPost also runs after an unexpected or forced death of slot.sh.
 set -euo pipefail
-slot=$1
-[[ $slot == botty || $slot == portal || $slot == codex ]] || exit 2
+script_dir=$(cd "$(dirname "$0")" && pwd -P)
+source "$script_dir/instance.sh" "$@"
 container=plus-$slot
 state="${XDG_RUNTIME_DIR:?}/plus-runner-$slot"
 finish() {
@@ -25,7 +25,7 @@ finish() {
       echo "JIT_CLEANUP_FAILED: preserving runner $runner_id for retry." >&2
     fi
   fi
-  if [[ $slot == codex ]] && ! bash "$(dirname "$0")/clean-codex-workspace.sh"; then
+  if [[ $family == codex ]] && ! bash "$script_dir/clean-codex-workspace.sh" "$slot"; then
     echo "CODEX_WORKSPACE_CLEANUP_FAILED: local teardown cleanup did not complete." >&2
     if ((status == 0)); then status=1; fi
   fi
