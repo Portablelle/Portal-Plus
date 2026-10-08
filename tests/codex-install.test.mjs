@@ -10,9 +10,9 @@ const hash = bytes => createHash('sha256').update(bytes).digest('hex');
 const PIN = /const HASH = '([a-f0-9]{64})'/.exec(readFileSync(new URL('../vps-site/src/codex-install.js',import.meta.url),'utf8'))[1];
 const names = ['assets/ggml-base.bin','assets/ui-font.bin','eboot.bin','sce_module/libc.prx','sce_sys/icon0.png','sce_sys/param.json'];
 const param = version => encode({titleId:'PPSA99105',contentId:'UP9000-PPSA99105_00-CODEXPS500000001',contentVersion:version,localizedParameters:{'en-US':{titleName:'Codex PS5 - Prototype'}}});
-function fixture(installed = true) {
+function fixture(installed = true, notices = 0) {
   const chunks = new Map(), disk = new Map(), dirs = new Set(), events = [];
-  const native = names.map(path => {
+  const native = [...names, ...Array.from({length:notices}, (_, i) => 'release/notice-' + i + '.txt')].map(path => {
     const data = path.endsWith('param.json') ? param('00.000.002') : encode('new-'+path);
     const sha = hash(data);chunks.set(sha,data);
     return {path,size:data.length,sha256:sha,chunks:[sha]};
@@ -42,6 +42,22 @@ test('fresh installation publishes native/model/service and preserves auth and w
   assert.ok(f.disk.has(NATIVE+'/assets/ggml-base.bin'));assert.ok(f.disk.has(SERVICE+'/assistant-service.elf'));
   assert.equal(new TextDecoder().decode(f.disk.get('/data/codex-ps5/home/.codex/auth.json')),'keep-auth');
   assert.equal(new TextDecoder().decode(f.disk.get('/data/codex-ps5/workspace/file')),'keep-workspace');
+});
+test('large verified receipts retain the stat cache across unchanged launches', async () => {
+  const f = fixture(false, 122);
+  const read = f.io.readFile;
+  f.io.readFile = async (path, maximum) => {
+    const bytes = await read(path);
+    return bytes && bytes.length <= maximum ? bytes : null;
+  };
+  f.io.fileStamp = async path => f.disk.has(path) ? {size:f.disk.get(path).length,stamp:'a'.repeat(176)} : null;
+  await installCodex(f.io, f.options);
+  assert.ok(f.disk.get(UPDATE + '/verified.json').length > 16384);
+  let verified = 0;
+  const matches = f.io.matchesFile;
+  f.io.matchesFile = async (...args) => { verified++; return matches(...args); };
+  assert.equal((await installCodex(f.io, f.options)).updated, false);
+  assert.equal(verified, 0);
 });
 test('prototype updates with backup, unchanged model reused; second launch downloads only manifest',async()=>{
   const f=fixture();const model=f.m.native[0];f.put(NATIVE+'/'+model.path,encode('new-'+model.path));

@@ -171,8 +171,8 @@ public IP changes, update the resolver's firewall allowlist.
 
 ### Portal
 
-For automatic publication from Portal+ `main` and Botty+ `main`, install the pull-based service below on
-the portal server (Python 3.12+, Git, and outbound HTTPS to GitHub are required).
+For automatic publication from Portal+, Botty+ and Codex PS5 `main`, install the pull-based service below on
+the portal server (Python 3.12+, Git, GitHub CLI, and outbound HTTPS to GitHub are required).
 It schedules the next check of `main` 60 seconds after each sync run finishes
 and exports only manifest-verified public files,
 rechecks the remote commit before activation, and atomically changes `current`.
@@ -188,17 +188,38 @@ sudo install -m 0644 deployment/sync-portal-main.py /opt/botty-portal/sync-porta
 sudo chown botty-portal:botty-portal /var/www/botty-ps5 /var/www/botty-ps5/releases
 sudo install -m 0644 deployment/botty-portal-sync.service deployment/botty-portal-sync.timer /etc/systemd/system/
 sudo systemctl daemon-reload
+```
+
+Set `BOTTY_PORTAL_REPOSITORY`, `BOTTY_APP_REPOSITORY` and `CODEX_APP_REPOSITORY` in
+`/etc/botty-portal-sync.env` when using other repositories. Defaults are
+`https://github.com/Portablelle/Portal-Plus.git`,
+`https://github.com/Portablelle/Botty-Plus.git` and `Portablelle/Codex-PS5`. All follow `main`.
+The public Portal+/Botty+ repositories require no GitHub or SSH secret. Codex is
+private: provision a read-only GitHub token with repository contents access as
+`GH_TOKEN` in the service's root-owned, mode-0600 environment file. Do not put it
+in a repository URL, public release or log. Verify access as the service user
+before enabling the timer.
+
+After the environment file is configured and repository access is verified:
+
+```sh
 sudo systemctl enable --now botty-portal-sync.timer
 sudo systemctl start botty-portal-sync.service
 ```
 
-Set `BOTTY_PORTAL_REPOSITORY` and `BOTTY_APP_REPOSITORY` in
-`/etc/botty-portal-sync.env` when using other repositories. Defaults are
-`https://github.com/Portablelle/Portal-Plus.git` and
-`https://github.com/Portablelle/Botty-Plus.git`. Both follow `main`.
-The public repositories require no GitHub or SSH secret. The deployment record
-contains both commits. Packages must be built and committed in Botty+; the VPS
-does not compile PS5 binaries. Botty+ failures leave the previous portal online.
+Codex's self-hosted publication workflow on `dedie` builds each `main` commit
+and publishes `codex-portal.tar.gz` in an immutable `portal-<commit>` release.
+The portal waits for that exact commit's build, verifies its inventory, native
+and service blocks, payload descriptor and corresponding source archive, then
+updates both installer pins and the public manifest. Missing, failed or stale
+Codex builds keep the previous portal online and are retried on the next timer
+run; a versioned release from an older commit is never substituted for `main`.
+The deployment record contains all three commits. Packages must be built and
+committed in Botty+; the portal VPS does not compile PS5 binaries.
+
+After merging updates to the synchronization service itself, reinstall
+`deployment/sync-portal-main.py` and the service/timer units using the commands
+above. Updating the public site alone does not update the installed service.
 `StateDirectoryMode=0700` keeps the service's Git cache private, including any
 repository URL credentials, while `UMask=0022` leaves published portal files
 readable by Nginx. After enabling automatic publication, `botty-portal` owns

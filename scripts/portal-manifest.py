@@ -14,7 +14,7 @@ PAYLOAD_NOTICES = ('shadowmountplus-source.tar.gz', 'shadowmountplus-LICENSE.txt
                    'shadowmountplus-NOTICE.md', 'ppr-patch-source.tar.gz',
                    'ppr-patch-LICENSE.txt', 'ppr-patch-NOTICE.md')
 PACKAGE_NOTICES = {
-    'codex': ('NOTICE.md', 'LICENSE'),
+    'codex': ('NOTICE.md', 'LICENSE', 'codex-source.tar.gz'),
     'cheatrunner': ('NOTICE.md', 'LICENSE', 'cheatrunner-source.tar.gz'),
     'rtorrent': ('README.md', 'LICENSE', 'rtorrent-source.tar.gz'),
     'botty': ('NOTICE.md', 'LICENSE', 'botty-source.tar.gz', 'game-compressor-source.tar.gz', 'game-compressor-NOTICE.md'),

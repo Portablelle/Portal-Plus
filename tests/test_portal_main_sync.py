@@ -228,6 +228,17 @@ class PortalMainSyncTests(unittest.TestCase):
                 self.deploy()
         self.assertEqual((self.root / 'current').resolve(), previous)
 
+    def test_oversized_root_manifest_is_rejected_before_validation(self):
+        self.deploy()
+        previous = (self.root / 'current').resolve()
+        path = self.repo / 'vps-site/manifest.json'
+        path.write_text(path.read_text() + ' ' * (4 * 1024 * 1024))
+        self.git('add', '.')
+        self.git('commit', '-m', 'oversized root manifest')
+        with self.assertRaisesRegex(RuntimeError, 'Portal manifest exceeds staging limit'):
+            self.deploy()
+        self.assertEqual((self.root / 'current').resolve(), previous)
+
     def test_recovery_discards_missing_or_invalid_rollback_targets(self):
         head = self.git('rev-parse', 'HEAD')
         self.deploy()

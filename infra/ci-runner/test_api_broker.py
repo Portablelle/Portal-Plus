@@ -38,7 +38,8 @@ class BrokerTests(unittest.TestCase):
 
     def test_rejects_malformed_arguments_without_starting_a_subprocess(self):
         for args in (("wrong", "create"), ("botty", "list"),
-                     ("portal", "delete", "0"), ("portal", "create", "extra")):
+                     ("portal", "delete", "0"), ("portal", "create", "extra"),
+                     ("codex", "create", "Portablelle/Other"), ("codex", "delete", "../1")):
             with self.subTest(args=args):
                 exc, call, _ = self.invoke(*args)
                 self.assertIsInstance(exc, SystemExit)
@@ -71,6 +72,20 @@ class BrokerTests(unittest.TestCase):
         self.assertIsNone(exc)
         self.assertEqual(call.call_args.args[0][-3:], ["repos/Portablelle/Portal-Plus/actions/runners/123", "--method", "DELETE"])
         self.assertIsNone(call.call_args.kwargs["input"])
+
+    def test_codex_create_and_delete_are_repository_and_label_scoped(self):
+        run = Mock(return_value=Mock(returncode=0, stdout=json.dumps({
+            "encoded_jit_config": "jit", "runner": {"id": 42}}), stderr=""))
+        exc, call, _ = self.invoke("codex", "create", run=run)
+        self.assertIsNone(exc)
+        self.assertEqual(call.call_args.args[0][6],
+                         "repos/Portablelle/Codex-PS5/actions/runners/generate-jitconfig")
+        self.assertEqual(json.loads(call.call_args.kwargs["input"])["labels"],
+                         ["self-hosted", "linux", "x64", "codex-ps5-ci"])
+        exc, call, _ = self.invoke("codex", "delete", "42", run=run)
+        self.assertIsNone(exc)
+        self.assertEqual(call.call_args.args[0][6],
+                         "repos/Portablelle/Codex-PS5/actions/runners/42")
 
     def test_create_failure_propagates_without_writing_a_configuration(self):
         run = Mock(return_value=Mock(returncode=7, stdout="", stderr="GitHub is unavailable\n"))

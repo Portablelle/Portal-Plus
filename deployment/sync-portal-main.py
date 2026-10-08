@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """Publish a verified snapshot of the latest main commit, without console changes."""
 import argparse
+from contextlib import contextmanager
 import fcntl
+import gzip
 import hashlib
 import json
 import os
@@ -12,6 +14,52 @@ import subprocess
 import sys
 import tarfile
 import tempfile
+import zlib
+
+
+@contextmanager
+def codex_archive(path):
+    headers = 0
+    extensions = 0
+
+    class LimitedInfo(tarfile.TarInfo):
+        def _proc_member(self, archive):
+            nonlocal headers, extensions
+            if self.type == tarfile.GNUTYPE_SPARSE:
+                raise RuntimeError('Codex release archive exceeds staging limits: sparse files are unsupported')
+            headers += 1
+            metadata = self.type in (tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.SOLARIS_XHDTYPE,
+                                    tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK)
+            extensions = extensions + 1 if metadata else 0
+            limit = 65536 if metadata else 256 * 1024 * 1024
+            if headers > 10000 or extensions > 64 or not 0 <= self.size <= limit:
+                raise RuntimeError('Codex release archive exceeds staging limits')
+            return super()._proc_member(archive)
+
+        def _proc_gnusparse_00(self, next, raw_headers):
+            raise RuntimeError('Codex release archive exceeds staging limits: sparse files are unsupported')
+
+        def _proc_gnusparse_01(self, next, pax_headers):
+            raise RuntimeError('Codex release archive exceeds staging limits: sparse files are unsupported')
+
+        def _proc_gnusparse_10(self, next, pax_headers, archive):
+            raise RuntimeError('Codex release archive exceeds staging limits: sparse files are unsupported')
+
+    class LimitedReader:
+        def __init__(self, stream):
+            self.stream = stream
+            self.remaining = 2 * 1024 * 1024 * 1024 + 64 * 1024 * 1024
+
+        def read(self, size):
+            data = self.stream.read(min(size, self.remaining + 1))
+            self.remaining -= len(data)
+            if self.remaining < 0:
+                raise RuntimeError('Codex release archive exceeds staging limits')
+            return data
+
+    with gzip.open(path, 'rb') as stream:
+        with tarfile.open(fileobj=LimitedReader(stream), mode='r|', tarinfo=LimitedInfo) as archive:
+            yield archive
 
 
 def command(args, **kwargs):
@@ -123,7 +171,7 @@ def reconcile_activation(state, root):
     current = root / 'current'
     if current_is_release(current, target):
         record = deployment_record(commit, target, previous)
-        record.update({k: pending[k] for k in ('portalCommit', 'bottyCommit') if k in pending})
+        record.update({k: pending[k] for k in ('portalCommit', 'bottyCommit', 'codexCommit') if k in pending})
         write_json_atomically(state / 'last-deploy.json', record)
     pending_path.unlink()
 
@@ -143,13 +191,22 @@ def reconcile_deploy_record(state, commit, target):
         previous = existing['previous']
     expected = deployment_record(commit, target, previous)
     if existing:
-        expected.update({k: existing[k] for k in ('portalCommit', 'bottyCommit') if k in existing and existing.get('commit') == commit})
+        expected.update({k: existing[k] for k in ('portalCommit', 'bottyCommit', 'codexCommit') if k in existing and existing.get('commit') == commit})
     if existing == expected:
         return
     write_json_atomically(record_path, expected)
 
 
-def sync_main(repository, state, root, botty_repository=None):
+def codex_remote_head(repository):
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9_.-]*', repository):
+        raise RuntimeError('Invalid Codex repository')
+    head = command(['gh', 'api', 'repos/' + repository + '/commits/main', '--jq', '.sha'])
+    if not re.fullmatch('[a-f0-9]{40}', head):
+        raise RuntimeError('Cannot resolve Codex main')
+    return head
+
+
+def sync_main(repository, state, root, botty_repository=None, codex_repository=None):
     state.mkdir(parents=True, exist_ok=True)
     root.mkdir(parents=True, exist_ok=True)
     releases = root / 'releases'
@@ -162,8 +219,9 @@ def sync_main(repository, state, root, botty_repository=None):
         reconcile_activation(state, root)
         portal_head = remote_head(repository)
         botty_head = remote_head(botty_repository) if botty_repository else None
-        head = (hashlib.sha256((portal_head + botty_head).encode()).hexdigest()[:40]
-                if botty_head else portal_head)
+        codex_head = codex_remote_head(codex_repository) if codex_repository else None
+        head = (hashlib.sha256((portal_head + (botty_head or '') + (codex_head or '')).encode()).hexdigest()[:40]
+                if botty_head or codex_head else portal_head)
         current = root / 'current'
         target = releases / ('main-' + head)
         if current_is_release(current, target):
@@ -192,14 +250,61 @@ def sync_main(repository, state, root, botty_repository=None):
                 command([sys.executable, str(source / 'scripts/compose-portal.py'),
                          '--root', str(source / 'vps-site'), '--botty', str(botty_source),
                          '--commit', botty_head])
+            if codex_head:
+                delivery = source / 'codex'
+                delivery.mkdir()
+                asset_size = command(['gh', 'api', 'repos/' + codex_repository + '/releases/tags/portal-' + codex_head,
+                                      '--jq', '[.assets[] | select(.name == "codex-portal.tar.gz") | .size] | if length == 1 then .[0] else null end'])
+                if not asset_size.isdecimal() or not 0 < int(asset_size) <= 1024 * 1024 * 1024:
+                    raise RuntimeError('Invalid or oversized Codex release asset')
+                if shutil.disk_usage(state).free < int(asset_size) + 512 * 1024 * 1024:
+                    raise RuntimeError('Insufficient free space for Codex staging')
+                command(['gh', 'release', 'download', 'portal-' + codex_head,
+                         '--repo', codex_repository, '--pattern', 'codex-portal.tar.gz',
+                         '--dir', str(delivery)])
+                if (delivery / 'codex-portal.tar.gz').stat().st_size != int(asset_size):
+                    raise RuntimeError('Codex release asset size changed during download')
+                archive_size = 0
+                names = set()
+                with codex_archive(delivery / 'codex-portal.tar.gz') as archive:
+                    for member in archive:
+                        name = member.name.rstrip('/')
+                        rel = Path(name)
+                        archive_size += member.size
+                        if (not name or rel.is_absolute() or '..' in rel.parts or rel.as_posix() != name or
+                                '\\' in name or name in names or not (member.isfile() or member.isdir()) or
+                                not 0 <= member.size <= 256 * 1024 * 1024 or len(names) >= 10000 or
+                                archive_size > 2 * 1024 * 1024 * 1024):
+                            raise RuntimeError('Codex release archive exceeds staging limits')
+                        names.add(name)
+                    snapshot_size = sum(path.stat().st_size for path in (source / 'vps-site').rglob('*') if path.is_file())
+                    required_space = 2 * archive_size + snapshot_size + 512 * 1024 * 1024
+                    if shutil.disk_usage(state).free < required_space:
+                        raise RuntimeError('Insufficient free space for Codex staging')
+                with codex_archive(delivery / 'codex-portal.tar.gz') as archive:
+                    archive.extractall(delivery / 'package', filter='data')
+                command([sys.executable, str(source / 'scripts/compose-codex.py'),
+                         '--root', str(source / 'vps-site'), '--codex', str(delivery / 'package'),
+                         '--commit', codex_head])
             validator = source / 'scripts/portal-manifest.py'
+            portal = source / 'vps-site'
+            manifest_path = portal / 'manifest.json'
+            if manifest_path.stat().st_size > 4 * 1024 * 1024:
+                raise RuntimeError('Portal manifest exceeds staging limit')
+            command([sys.executable, str(validator), '--root', str(portal), '--check'])
+            inventory = json.loads(manifest_path.read_text())['sha256']
+            export_size = manifest_path.stat().st_size + sum(
+                (portal / name).stat().st_size for name in inventory)
+            if shutil.disk_usage(releases).free < export_size + 512 * 1024 * 1024:
+                raise RuntimeError('Insufficient free space for portal export')
             with tempfile.TemporaryDirectory(prefix='.staging-', dir=releases) as staging:
                 export = Path(staging) / 'portal'
                 command([sys.executable, str(validator), '--root',
                          str(source / 'vps-site'), '--output', str(export)])
                 # A newer main commit must never be overwritten by a slow export.
                 if (remote_head(repository) != portal_head or
-                        botty_head and remote_head(botty_repository) != botty_head):
+                        botty_head and remote_head(botty_repository) != botty_head or
+                        codex_head and codex_remote_head(codex_repository) != codex_head):
                     return 'superseded'
                 if target.exists() or target.is_symlink():
                     if not target.is_dir() or target.is_symlink():
@@ -210,6 +315,8 @@ def sync_main(repository, state, root, botty_repository=None):
                 pending = deployment_record(head, target, previous)
                 if botty_head:
                     pending.update(portalCommit=portal_head, bottyCommit=botty_head)
+                if codex_head:
+                    pending.update(portalCommit=portal_head, codexCommit=codex_head)
                 write_json_atomically(state / 'activation-pending.json', pending)
                 next_link = root / '.current.next'
                 if next_link.is_symlink():
@@ -234,12 +341,14 @@ def main():
         'BOTTY_PORTAL_REPOSITORY', 'https://github.com/Portablelle/Portal-Plus.git'))
     parser.add_argument('--botty-repository', default=os.environ.get(
         'BOTTY_APP_REPOSITORY', 'https://github.com/Portablelle/Botty-Plus.git'))
+    parser.add_argument('--codex-repository', default=os.environ.get(
+        'CODEX_APP_REPOSITORY', 'Portablelle/Codex-PS5'))
     parser.add_argument('--state', type=Path, default=Path('/var/lib/botty-portal/split'))
     parser.add_argument('--root', type=Path, default=Path('/var/www/botty-ps5'))
     args = parser.parse_args()
     try:
-        print(sync_main(args.repository, args.state.resolve(), args.root.resolve(), args.botty_repository))
-    except (OSError, RuntimeError, subprocess.SubprocessError, tarfile.TarError) as error:
+        print(sync_main(args.repository, args.state.resolve(), args.root.resolve(), args.botty_repository, args.codex_repository))
+    except (OSError, RuntimeError, subprocess.SubprocessError, tarfile.TarError, EOFError, zlib.error) as error:
         print('Portal deployment failed: ' + str(error), file=sys.stderr)
         if isinstance(error, subprocess.CalledProcessError):
             print((error.stderr or error.stdout or '').strip()[-2000:], file=sys.stderr)

@@ -1,6 +1,7 @@
 # Plus CI runners on dedie
 
-Every workflow uses `[self-hosted, linux, x64, <botty|portal>-plus-ci]`, with
+Plus workflows use `[self-hosted, linux, x64, <botty|portal>-plus-ci]`; Codex
+Linux builds use `[self-hosted, linux, x64, codex-ps5-ci]`, with
 no GitHub-hosted fallback. Unavailable runners leave jobs queued.
 
 ## Isolation and registration
@@ -8,10 +9,13 @@ no GitHub-hosted fallback. Unavailable runners leave jobs queued.
 Like Ciaobella, each job gets a new single-use GitHub JIT runner identity and
 one fresh container in the existing `gh-runner` rootless Docker daemon.
 GitHub removes that identity after one job. There are no persistent runner
-credentials, host mounts, deployment keys or Docker sockets inside the job.
+credentials, deployment keys or Docker sockets inside the job. Plus jobs have
+no host mounts; Codex mounts only its dedicated size-bounded scratch filesystem.
 
 A root-owned `/usr/local/sbin/plus-runner-api` broker creates/deletes JIT
-runners only for `Portablelle/Botty-Plus` and `Portablelle/Portal-Plus`.
+runners only for `Portablelle/Botty-Plus`, `Portablelle/Portal-Plus`, and
+`Portablelle/Codex-PS5`. Repository and label selection are fixed by slot; callers
+cannot supply an arbitrary API path, repository, label, or operation.
 It uses Ubuntu's existing authenticated `/snap/bin/gh` installation. The
 host `gh-runner` user gets sudo access only to that argument-validated broker;
 the underlying administrative token remains in Ubuntu's existing configuration,
@@ -35,6 +39,75 @@ output cannot grow the host's Docker graph without bound.
 The immutable image includes Clang, libcurl, zlib development headers,
 Python/Pillow, and Node 24. `AGENT_TOOLSDIRECTORY` and `RUNNER_TOOL_CACHE`
 point to the fresh writable copy of the preinstalled Node tool cache.
+
+### Codex toolchain and scratch
+
+The `codex` slot uses the independent `codex-runner:latest` image. It retains
+the 4 CPU, 8 GiB RAM/no swap, PID, capability, network, and log limits above.
+Its home is a dedicated 16 GiB ext4 loop filesystem instead of the 4 GiB tmpfs;
+`/tmp` remains bounded tmpfs. The image contains Clang/LLVM/lld 18 and 19,
+CMake/Ninja, Python jsonschema/jinja2, Autotools, SSL/libclang development
+headers, Node, and Rust 1.95.0 with rust-src and the FreeBSD target. The pinned
+SDK/OpenSSL/curl bootstrap and narrow Rust std patch come from the reviewed
+Codex checkout. Jobs compile directly using `tools/build-native.sh` and
+`tools/build-backend-direct.sh`; they do not invoke Docker, SSH, or sudo.
+
+`provision-codex-workspace.sh` creates `/var/lib/plus-runner-codex/workspace.img`
+with 16 GiB allocated on disk (requires 20 GiB free), mounts it at
+`/home/gh-runner/codex-workspace`, and adds a dedicated `loop,nosuid,nodev`
+ext4 entry to `/etc/fstab` for reboot. The backing image remains root-owned
+and private. Only the mapped container UID 1001 can write the mounted home.
+New images are allocated and formatted in a root-owned temporary file, then
+validated and atomically hard-linked to the final backing path without clobbering
+an existing file. Concurrent formatters validate and retain the first winner,
+then unlink their own temporary file. Interrupted/failed
+formatting cannot publish a sized but invalid image; existing invalid backing
+files are refused rather than reformatted or mounted.
+There are no broader host directory mounts. Before registration, after every
+session, and on service stop, a bounded, network-disabled unprivileged container
+removes all home contents, retaining the filesystem. Failed cleanup prevents
+a new job. No dependency/source/credential cache is retained between jobs.
+Cleanup restores owner traversal/write permissions on directories before
+removal from an inode-anchored working directory, never following symlinks or
+holding one descriptor per nesting level. It runs under
+a host-side lock with the fixed container name `plus-codex-cleanup`, a 512 MiB
+memory ceiling, one linear scan per directory, and a
+25-second deadline. Each invocation reaps any previous deleter before starting,
+and stops/removes its own deleter on exit or timeout. If Docker cannot prove
+that the deleter is gone, registration remains blocked until recovery succeeds.
+Cleanup refuses to touch scratch while `plus-codex` is still running. Service
+stop cleanup runs even when API revocation fails or a local runner ID is
+malformed; a valid ID remains available for retry if revocation fails.
+An unexpected host power loss can leave data until startup cleanup; this
+scratch is not encrypted and must not hold long-lived administrative secrets.
+
+Pathological trees that cannot be traversed within the deadline are treated
+as resource-exhaustion failures, not as permission to admit another job.
+Repeated timeouts require an administrator to quiesce only the Codex slot and
+clear its dedicated scratch; arbitrary hostile trees are not guaranteed to
+make forward progress within a bounded cleanup attempt.
+
+Build the Codex image explicitly as `gh-runner` using
+`bash infra/ci-runner/build-codex-image.sh /path/to/reviewed/Codex-PS5` with
+the rootless `DOCKER_HOST` and runtime environment below. The checkout must
+be readable by that account. The script copies only the source lock,
+SDK bootstrap, and Rust patch into a temporary build context. Downloaded
+SDK/OpenSSL/curl archives are SHA-256 checked by that bootstrap. Rust is
+version-pinned to the official 1.95.0 image. The base runner is selected by
+its local immutable image ID. A SHA-256 of the Dockerfile and toolchain input
+files is recorded in the `com.portablelle.codex-runner.input-config-sha` label.
+That label identifies configuration inputs, not all base images or installed
+content. The exact built image ID passes a read-only/no-network toolchain smoke
+check before promotion to `codex-runner:latest` and `image-<image-id>`; candidate
+tag changes cannot alter validation or promotion, and distinct images never
+share a generated version tag. Build containers are limited to 2 CPUs/4 GiB; existing
+Plus images and containers are not rebuilt or restarted. Keep old Codex tags
+until their jobs finish; there is no automatic Codex image pruning.
+
+The weekly timer updates only the Plus image. Codex updates need a reviewed
+checkout and an explicit rerun of `build-codex-image.sh`; existing Codex jobs
+keep their old image. Rebuild Codex after a Plus runner version update so its
+Actions runner and Node copies stay current.
 
 ## Install and maintenance
 
@@ -67,6 +140,16 @@ reinstallation also restarts the slots. The configured host UID must be 1001.
 It also runs `sudo loginctl enable-linger gh-runner`, so these user services
 and the timer run after logout and reboot.
 
+After the independent Codex image has been built, run
+`bash infra/ci-runner/install-host.sh --add-codex` to provision scratch, preflight
+only Codex JIT write/delete access, and enable/start only `plus-runner@codex`.
+This additive mode skips APT installation and Plus image rebuilding, does not
+restart Botty/Portal or an already running Codex service, and preserves their
+processes. It updates the shared argument-validated broker and reviewed slot
+scripts through `install`; existing slot processes remain running. The default
+installer still installs/restarts only Botty/Portal, without a Codex image
+prerequisite. Do not use that default during active CI jobs.
+
 The weekly image timer validates version discovery and official download
 hashes before building. Only superseded Plus runner images are cleaned up;
 images still used by jobs and unrelated Ciaobella images are retained.
@@ -82,7 +165,36 @@ minutes, so a temporarily unavailable network at boot is retried.
 restart after Docker failures. Each normal exit revokes any unused JIT
 identity; failed deletions retain their ID and are retried before a new
 registration. `ExecStopPost=stop-slot.sh` also stops/removes the container and
-revokes the identity after an unexpected/forced slot exit. Cleanup has bounded
+revokes the identity after an unexpected/forced slot exit. The additive installer
+installs a Codex-only `TimeoutStopSec=240` drop-in; Botty/Portal retain the template
+default of 90 seconds. Startup verifies the Codex unit MainPID equals the slot
+PID and its InvocationID matches the inherited ID using one local query with a
+two-second deadline plus two-second forced-kill grace. The result is retained
+inside the process, not trusted from an environment marker. For that verified
+managed context, Codex slot EXIT only
+terminates/reaps its own background clients or retry timers (at most seven
+seconds) and removes the transient environment file. `ExecStopPost` exclusively
+owns full teardown, including after a forced main-process kill. No completion
+marker can suppress recovery; manual or unverifiable-context exits call the same
+stop helper directly. The normal TERM/EXIT/post-stop budget is 154 seconds,
+with exactly one 147-second full teardown:
+27 seconds to stop, 12 to remove, 37 for the broker (35 plus forced-kill grace),
+and 71 for workspace cleanup including lock wait, checks, and both orphan-reaping
+passes. Every timed client gets a two-second forced-kill grace, so ignoring TERM
+cannot turn a client deadline into an indefinite wait. A new Codex runner ID
+is written to a temporary host journal and atomically published before admission.
+Failed checkpointing revokes the known in-memory ID with a bounded call and
+blocks new registrations until that identity is cleared; a partial journal
+cannot override this retained ID. If EXIT occurs before a durable checkpoint,
+one additional 37-second emergency revocation can bring the complete stop
+budget to 191 seconds. Bash can defer TERM until an already-running foreground
+client returns: Codex Docker info/network/remove/create and broker deletion
+clients are bounded to 35 seconds plus two-second forced-kill grace. Including
+this deferred 37-second client gives a conservative complete bound of 228
+seconds (37 + 37 + 7 + 147). Asynchronous job attachment is not timed out; EXIT
+kills/reaps only that owned client. A failed emergency call logs only the
+nonsecret ID for administrative cleanup; no job is admitted. The 240-second limit
+retains headroom for local filesystem and process overhead. Cleanup has bounded
 timeouts, and `KillMode=mixed` cleans up remaining unit processes.
 A manual service stop/restart intentionally aborts an in-flight CI job after
 up to 20 seconds; do this only when a job may be cancelled. Weekly image
@@ -92,4 +204,5 @@ at five minutes, resetting after a completed runner session.
 
 Inspect logs as gh-runner with `XDG_RUNTIME_DIR=/run/user/1001`:
 `journalctl --user -u plus-runner@botty -u plus-runner@portal`.
+For Codex use `journalctl --user -u plus-runner@codex`.
 Never commit GitHub tokens, JIT configurations, or runner credential files.
