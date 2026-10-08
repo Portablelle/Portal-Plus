@@ -38,6 +38,16 @@ class ContainmentTests(unittest.TestCase):
             with self.subTest(running=running), self.assertRaises(ValueError):
                 containment.verify_container(["/plus-codex", "", "a" * 64, running])
 
+    def test_well_formed_partial_unit_inventory_hits_completeness_check(self):
+        output = "\n\n".join(self.units().split("\n\n")[:-1])
+        with self.assertRaisesRegex(ValueError, "^Incomplete Plus unit inventory\\.$"):
+            containment.verify_units(output)
+
+    def test_valid_stopped_container_is_accepted_without_reading_proc(self):
+        with patch.object(Path, "read_text") as read:
+            containment.verify_container(["/plus-codex-2", "plusci.slice", "a" * 64, False])
+            read.assert_not_called()
+
     def test_all_six_scoped_containers_require_their_actual_kernel_scope(self):
         identity = "a" * 64
         scope = containment.CGROUP + f"/docker-{identity}.scope"

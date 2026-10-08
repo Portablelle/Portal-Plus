@@ -117,9 +117,13 @@ class MultislotTests(unittest.TestCase):
     def test_codex_unit_verification_queries_only_selected_instance(self):
         with patch.dict(os.environ, {"INVOCATION_ID": "a" * 32}):
             _, commands = slot_tests.SlotTests().run_slot("codex-2")
-        queries = [c for c in commands if c[0] == "systemctl" and "--property=MainPID" in c]
+        queries = [c for c in commands if c[0] == "systemctl" and "--property=InvocationID" in c]
         self.assertEqual(queries, [["systemctl", "--user", "show", "plus-runner@codex-2.service",
                                     "--property=MainPID", "--property=InvocationID"]])
+        inventory = [c for c in commands if c[0] == "systemctl" and "--property=Id" in c]
+        self.assertEqual(len(inventory), 1)
+        self.assertEqual(set(inventory[0][3:-2]), {f"plus-runner@{slot}.service" for slot in
+                                                 ("botty", "portal", "codex", "botty-2", "portal-2", "codex-2")})
 
     def test_simultaneous_codex_instances_and_targeted_stop_leave_sibling_intact(self):
         with tempfile.TemporaryDirectory() as directory:

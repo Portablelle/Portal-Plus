@@ -8,7 +8,33 @@ import tempfile
 import time
 import unittest
 
-from test_cleanup import MOCK
+from test_cleanup import MOCK as CLEANUP_MOCK
+
+
+MOCK = """#!/usr/bin/env python3
+import json, os, pathlib, sys
+name = pathlib.Path(sys.argv[0]).name
+args = sys.argv[1:]
+budget = name == "cat" or (name == "systemctl" and ("--property=Id" in args or "plusci.slice" in args)) or (name == "docker" and args[:2] == ["info", "--format"])
+if budget:
+    with open(os.environ["COMMAND_LOG"], "a") as log:
+        log.write(json.dumps([name, *args]) + "\\n")
+    if name == "cat":
+        values = {"memory.high": "15032385536", "memory.max": "17179869184", "memory.swap.max": "0", "cpu.max": "600000 100000"}
+        if args[0].startswith("/sys/fs/cgroup/"):
+            print(values[pathlib.Path(args[0]).name])
+        else:
+            sys.stdout.write(pathlib.Path(args[0]).read_text())
+    elif name == "systemctl" and "--property=Id" in args:
+        for unit in args:
+            if unit.startswith("plus-runner@"):
+                print("Id=" + unit + "\\nMainPID=0\\n")
+    elif name == "systemctl":
+        print("/user.slice/user-1001.slice/user@1001.service/plusci.slice")
+    else:
+        print("systemd 2")
+    sys.exit(0)
+exec(""" + repr(CLEANUP_MOCK) + ")\n"
 
 
 ROOT = Path(__file__).resolve().parent
@@ -45,7 +71,7 @@ class LifecycleTests(unittest.TestCase):
         env = dict(self.env)
         if invocation is not None:
             env["INVOCATION_ID"] = invocation
-        process = subprocess.Popen(["bash", str(ROOT / "slot.sh"), "codex"], env=env,
+        process = subprocess.Popen(["bash", str(getattr(self, "slot_script", ROOT / "slot.sh")), "codex"], env=env,
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         self.addCleanup(self.stop_process, process)
         pending = self.root / "slot-pid.pending"

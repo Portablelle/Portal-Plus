@@ -118,7 +118,8 @@ class BudgetInstallationTests(unittest.TestCase):
 
     def test_atomic_script_install_preserves_active_reader_inode(self):
         source = (ROOT / "install-host.sh").read_text()
-        function = source[source.index("atomic_install() {"):source.index("\natomic_install root")]
+        start = source.index("atomic_install() {")
+        function = source[start:source.index("\n}", start) + 2]
         sudo = '''#!/usr/bin/env python3
 import os, pathlib, shutil, sys, tempfile
 args = sys.argv[1:]
@@ -193,6 +194,9 @@ elif args[0] == "install":
         os.chmod(destination, int(args[args.index("-m") + 1], 8))
 elif args[0] == "mktemp":
     assert str(pathlib.Path(args[-1])).startswith(str(root)), args
+    if "-d" in args:
+        print(tempfile.mkdtemp(prefix=pathlib.Path(args[-1]).name[:-6], dir=str(pathlib.Path(args[-1]).parent)))
+        sys.exit(0)
     fd, path = tempfile.mkstemp(prefix=pathlib.Path(args[-1]).name[:-6], dir=str(pathlib.Path(args[-1]).parent))
     os.close(fd)
     print(path)
@@ -202,6 +206,9 @@ elif args[0] == "mv":
 elif args[0] == "tee":
     assert str(pathlib.Path(args[-1])).startswith(str(root)), args
     pathlib.Path(args[-1]).write_text(sys.stdin.read())
+elif args[0] == "rm":
+    assert str(pathlib.Path(args[-1])).startswith(str(root)), args
+    shutil.rmtree(args[-1])
 elif args[0] not in ("modprobe", "sysctl", "loginctl", "visudo"):
     raise AssertionError(args)
 '''
@@ -211,10 +218,12 @@ elif args[0] not in ("modprobe", "sysctl", "loginctl", "visudo"):
             shutil.copytree(ROOT, checkout)
             binaries = root / "bin"
             binaries.mkdir()
-            for relative in ("home", "sbin", "run", "etc/modules-load.d", "etc/sysctl.d", "etc/sudoers.d"):
+            for relative in ("home", "sbin", "run", "tmp", "etc/modules-load.d", "etc/sysctl.d", "etc/sudoers.d"):
                 (root / relative).mkdir(parents=True, exist_ok=True)
             live = root / "home/plus-runner"
             live.mkdir()
+            (root / "sbin/plus-runner-api").write_text("legacy broker\n")
+            (root / "etc/sudoers.d/plus-runner").write_text("legacy sudoers\n")
             (live / "clean-codex-workspace.sh").write_text("legacy cleanup helper\n")
             if active_slice:
                 units = root / "home/.config/systemd/user"
@@ -224,6 +233,7 @@ elif args[0] not in ("modprobe", "sysctl", "loginctl", "visudo"):
             source = script.read_text().replace("/home/gh-runner", str(root / "home"))
             source = source.replace("/usr/local/sbin", str(root / "sbin")).replace("/etc/", str(root / "etc") + "/")
             source = source.replace("/run/user/1001", str(root / "run"))
+            source = source.replace("/var/tmp/", str(root / "tmp") + "/")
             source = source.replace(f"PATH={root}/home/bin:/usr/bin:/bin", f"PATH={binaries}:/usr/bin:/bin")
             script.write_text(source)
             for name in ("docker", "systemctl", "cat", "timeout", "flock", "id", "jq"):
@@ -244,10 +254,11 @@ elif args[0] not in ("modprobe", "sysctl", "loginctl", "visudo"):
                 (live / "current/slot.sh").read_text() if (live / "current").exists() else None, \
                 (root / "home/.config/systemd/user/plusci.slice").read_text(), \
                 list((root / "home").glob(".plus-runner-*-stage.*")), \
-                (live / "clean-codex-workspace.sh").read_text()
+                (live / "clean-codex-workspace.sh").read_text(), \
+                ((root / "sbin/plus-runner-api").read_text(), (root / "etc/sudoers.d/plus-runner").read_text())
 
     def test_additive_installation_executes_only_requested_slot_and_atomic_publication(self):
-        result, commands, cleanup, slot, slice_source, stages, legacy = self.install_fixture()
+        result, commands, cleanup, slot, slice_source, stages, legacy, roots = self.install_fixture()
         self.assertEqual(result.returncode, 0, result.stderr)
         starts = [c for c in commands if c[:3] == ["systemctl", "--user", "start"]]
         self.assertEqual(starts, [["systemctl", "--user", "start", "plusci.slice"],
@@ -259,29 +270,32 @@ elif args[0] not in ("modprobe", "sysctl", "loginctl", "visudo"):
         self.assertEqual(slice_source, (ROOT / "plusci.slice").read_text())
         self.assertEqual(stages, [])
         self.assertEqual(legacy, "legacy cleanup helper\n")
+        self.assertEqual(roots, ((ROOT / "api-broker.py").read_text(), (ROOT / "plus-runner.sudoers").read_text()))
 
     def test_failed_probe_leaves_live_cleanup_and_scripts_untouched(self):
-        result, commands, cleanup, slot, _, stages, legacy = self.install_fixture(bad_placement=True)
+        result, commands, cleanup, slot, _, stages, legacy, roots = self.install_fixture(bad_placement=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIsNone(cleanup)
         self.assertEqual(legacy, "legacy cleanup helper\n")
+        self.assertEqual(roots, ("legacy broker\n", "legacy sudoers\n"))
         self.assertIsNone(slot)
         self.assertEqual(stages, [])
         self.assertFalse(any(c[:3] == ["systemctl", "--user", "enable"] for c in commands))
         self.assertFalse(any(c[:3] == ["systemctl", "--user", "start"] and c[-1] != "plusci.slice" for c in commands))
 
     def test_conflicting_active_slice_is_not_reconfigured_or_used_to_publish_helpers(self):
-        result, commands, cleanup, slot, slice_source, stages, legacy = self.install_fixture(active_slice=True, bad_limit=True)
+        result, commands, cleanup, slot, slice_source, stages, legacy, roots = self.install_fixture(active_slice=True, bad_limit=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIsNone(cleanup)
         self.assertEqual(legacy, "legacy cleanup helper\n")
+        self.assertEqual(roots, ("legacy broker\n", "legacy sudoers\n"))
         self.assertIsNone(slot)
         self.assertEqual(slice_source, "existing slice configuration\n")
         self.assertEqual(stages, [])
         self.assertFalse(any(c[:3] == ["systemctl", "--user", "start"] for c in commands))
 
     def test_legacy_overlap_publishes_validated_release_but_never_activates_extra_slots(self):
-        result, commands, cleanup, slot, _, stages, legacy = self.install_fixture(legacy_container=True)
+        result, commands, cleanup, slot, _, stages, legacy, _ = self.install_fixture(legacy_container=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("PLUS_LEGACY_MIGRATION_REQUIRED", result.stderr)
         self.assertEqual(cleanup, (ROOT / "clean-codex-workspace.sh").read_text())

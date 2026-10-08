@@ -96,6 +96,12 @@ if [[ $family == codex && ${INVOCATION_ID:-} =~ ^[0-9a-fA-F]{32}$ ]]; then
     fi
   fi
 fi
+if [[ $script_dir == /home/gh-runner/plus-runner/releases/* && -n ${INVOCATION_ID:-} ]]; then
+  python3 "$script_dir/invocation-release.py" record "$slot" "${INVOCATION_ID:-}" "$script_dir" || {
+    echo "INVOCATION_RELEASE_NOT_VERIFIED: no job admitted." >&2
+    exit 1
+  }
+fi
 "${docker_client[@]}" rm -f "$container" >/dev/null 2>&1 || true
 retry_delay=15
 backoff() {

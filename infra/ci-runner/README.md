@@ -114,12 +114,14 @@ a new job. No dependency/source/credential cache is retained between jobs.
 Cleanup restores owner traversal/write permissions on directories before
 removal from an inode-anchored working directory, never following symlinks or
 holding one descriptor per nesting level. It runs under
-a host-side lock with the fixed container name `plus-codex-cleanup`, a 512 MiB
+a host-side `plus-runner-$slot-cleanup.lock` and container `plus-$slot-cleanup`
+(respectively `codex` or `codex-2` scoped), a 512 MiB
 memory ceiling, one linear scan per directory, and a
 25-second deadline. Each invocation reaps any previous deleter before starting,
 and stops/removes its own deleter on exit or timeout. If Docker cannot prove
 that the deleter is gone, registration remains blocked until recovery succeeds.
-Cleanup refuses to touch scratch while `plus-codex` is still running. Service
+Cleanup refuses to touch its scratch while `plus-$slot` (`plus-codex` or
+`plus-codex-2`) is still present, including a created but not yet started job. Service
 stop cleanup runs even when API revocation fails or a local runner ID is
 malformed; a valid ID remains available for retry if revocation fails.
 An unexpected host power loss can leave data until startup cleanup; this
@@ -196,6 +198,9 @@ directory for every helper they subsequently load. Existing unversioned
 top-level scripts are left untouched, so active legacy Bash readers and their
 helpers keep the original files rather than seeing a truncated/mixed revision.
 Failed probe validation leaves live shared cleanup/slot helpers untouched.
+The live root broker and sudoers rule are also published only after successful
+placement and JIT permission preflight; the latter uses a root-owned private
+staged broker rather than replacing the live broker first.
 An already-active aggregate slice is verified rather than reconfigured; a
 conflicting live budget aborts installation without applying new limits.
 The default installer starts only missing Botty/Portal services, without a
@@ -261,7 +266,14 @@ inside the process, not trusted from an environment marker. For that verified
 managed context, Codex slot EXIT only
 terminates/reaps its own background clients or retry timers (at most seven
 seconds) and removes the transient environment file. `ExecStopPost` exclusively
-owns full teardown, including after a forced main-process kill. No completion
+owns full teardown, including after a forced main-process kill.
+The selected physical release is atomically recorded with the instance and
+InvocationID before job admission. A stable post-stop dispatcher validates that
+binding and invokes the same release's stop helper even if `current` changes.
+Failed revocation retains both the runner ID and invocation record for retry;
+an absent record before admission or for a legacy service uses only validated
+legacy/current fallback paths. No arbitrary source path can be dispatched.
+No completion
 marker can suppress recovery; manual or unverifiable-context exits call the same
 stop helper directly. The normal TERM/EXIT/post-stop budget is 154 seconds,
 with exactly one 147-second full teardown:

@@ -64,26 +64,15 @@ atomic_install() {
   sudo install -o "$owner" -g "$group" -m "$mode" "$source" "$temporary"
   sudo mv -fT "$temporary" "$destination"
 }
-atomic_install root root 755 api-broker.py /usr/local/sbin/plus-runner-api
-# Reading runner metadata does not prove JIT administration permission.
-# These identities are never started and are deleted immediately.
-for slot in "${slots[@]}"; do
-  probe_reply=$(sudo /usr/local/sbin/plus-runner-api "$slot" create)
-  probe_id=$(jq -er '.runner.id' <<<"$probe_reply")
-  unset probe_reply
-  if ! sudo /usr/local/sbin/plus-runner-api "$slot" delete "$probe_id"; then
-    echo "JIT access preflight failed to delete $slot runner $probe_id; remove that unused identity manually." >&2
-    exit 1
-  fi
-done
 sudo visudo -cf plus-runner.sudoers
-atomic_install root root 440 plus-runner.sudoers /etc/sudoers.d/plus-runner
-files=(Dockerfile Dockerfile.codex build-image.sh build-codex-image.sh instance.sh verify-budget.sh verify-containment.py plusci.slice slot.sh stop-slot.sh clean-codex-workspace.sh plus-runner@.service plus-runner-image.service plus-runner-image.timer)
+files=(Dockerfile Dockerfile.codex build-image.sh build-codex-image.sh instance.sh invocation-release.py verify-budget.sh verify-containment.py plusci.slice slot.sh stop-slot.sh clean-codex-workspace.sh plus-runner@.service plus-runner-image.service plus-runner-image.timer)
 stage=
+broker_stage=
 finish() {
   status=$?
   trap - EXIT
   [[ -z $stage ]] || sudo -u gh-runner rm -rf -- "$stage" || true
+  [[ -z $broker_stage ]] || sudo rm -rf -- "$broker_stage" || true
   exit "$status"
 }
 trap finish EXIT
@@ -115,7 +104,21 @@ sudo -u gh-runner env HOME=/home/gh-runner XDG_RUNTIME_DIR=/run/user/1001 \
     fi
     for slot in "$@"; do bash "$stage/verify-budget.sh" --probe "$slot"; done
   ' bash "$stage" "${1:-full}" "${slots[@]}"
+broker_stage=$(sudo mktemp -d /var/tmp/plus-runner-api.XXXXXX)
+atomic_install root root 755 api-broker.py "$broker_stage/plus-runner-api"
+for slot in "${slots[@]}"; do
+  probe_reply=$(sudo "$broker_stage/plus-runner-api" "$slot" create)
+  probe_id=$(jq -er '.runner.id' <<<"$probe_reply")
+  unset probe_reply
+  if ! sudo "$broker_stage/plus-runner-api" "$slot" delete "$probe_id"; then
+    echo "JIT access preflight failed to delete $slot runner $probe_id; remove that unused identity manually." >&2
+    exit 1
+  fi
+done
+atomic_install root root 755 "$broker_stage/plus-runner-api" /usr/local/sbin/plus-runner-api
+atomic_install root root 440 plus-runner.sudoers /etc/sudoers.d/plus-runner
 sudo install -d -o gh-runner -g gh-runner -m 755 /home/gh-runner/plus-runner/releases
+atomic_install gh-runner gh-runner 644 "$stage/invocation-release.py" /home/gh-runner/plus-runner/post-stop.py
 release="/home/gh-runner/plus-runner/releases/${stage##*/}"
 sudo -u gh-runner mv -T "$stage" "$release"
 stage=

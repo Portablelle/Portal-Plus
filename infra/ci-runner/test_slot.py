@@ -12,6 +12,8 @@ MOCK = '''#!/usr/bin/env python3
 import json, os, pathlib, subprocess, sys
 name = pathlib.Path(sys.argv[0]).name
 args = sys.argv[1:]
+with open(os.environ["COMMAND_LOG"], "a") as log:
+    log.write(json.dumps([name, *args]) + "\\n")
 if name == "systemctl" and "--property=Id" in args:
     for unit in args:
         if unit.startswith("plus-runner@"):
@@ -30,8 +32,6 @@ if name == "systemctl" and "plusci.slice" in args:
 if name == "docker" and args[:2] == ["info", "--format"]:
     print("systemd 2")
     sys.exit(0)
-with open(os.environ["COMMAND_LOG"], "a") as log:
-    log.write(json.dumps([name, *args]) + "\\n")
 if name == "timeout":
     command = next(index for index, arg in enumerate(args) if arg in ("cat", "docker", "sudo", "tail", "systemctl", "bash"))
     sys.exit(subprocess.run(args[command:]).returncode)
@@ -116,11 +116,13 @@ class SlotTests(unittest.TestCase):
         _, commands = self.run_slot("codex", network_missing=True)
         commands = commands[:next(index for index, command in enumerate(commands) if command[0] == "sleep")]
         operations = set()
+        probes = 0
         for index, command in enumerate(commands):
             if command[0] != "docker":
                 continue
             foreground = command[1] in ("info", "network", "create") or (command[1] == "rm" and command[-1] == "plus-codex")
             if command[1:3] == ["info", "--format"]:
+                probes += 1
                 self.assertEqual(commands[index - 1][:4], ["timeout", "--kill-after=2", "5", "docker"])
                 continue
             if foreground:
@@ -129,17 +131,22 @@ class SlotTests(unittest.TestCase):
             if command[1] == "start":
                 self.assertNotEqual(commands[index - 1][0], "timeout")
         self.assertTrue({("info",), ("network", "inspect"), ("network", "create"), ("create",), ("rm",)}.issubset(operations))
+        self.assertEqual(probes, 1)
 
     def test_existing_slots_keep_unwrapped_foreground_docker_clients(self):
         for slot in ("botty", "portal"):
             with self.subTest(slot=slot):
                 _, commands = self.run_slot(slot)
+                probes = 0
                 for index, command in enumerate(commands):
                     if command[0] == "docker" and command[1] in ("info", "network", "create"):
                         if command[1:3] == ["info", "--format"]:
+                            probes += 1
                             self.assertEqual(commands[index - 1][:4], ["timeout", "--kill-after=2", "5", "docker"])
                         else:
                             self.assertNotEqual(commands[index - 1][0], "timeout")
+                self.assertGreaterEqual(probes, 1)
+                self.assertEqual(sum(c[:4] == ["timeout", "--kill-after=2", "5", "docker"] and c[4:6] == ["info", "--format"] for c in commands), probes)
 
 
 if __name__ == "__main__":
