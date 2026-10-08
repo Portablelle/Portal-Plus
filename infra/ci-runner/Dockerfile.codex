@@ -26,13 +26,13 @@ RUN bash /tmp/codex-toolchain/bootstrap-sdk.sh /tmp/codex-toolchain/sources.lock
     && rustup component add rust-src && rustup target add x86_64-unknown-freebsd \
     && python3 /tmp/codex-toolchain/prepare-rust-std.py \
     && rm -rf /tmp/codex-toolchain
-RUN apt-get update && apt-get install -y --no-install-recommends gh build-essential \
-    && rm -rf /var/lib/apt/lists/*
 RUN useradd --create-home --uid 1001 runner \
     && chown -R runner:runner /opt/actions-runner /opt/hostedtoolcache \
     && git config --system init.defaultBranch main
 ENV CARGO_HOME=/home/runner/.cargo
 ENV AGENT_TOOLSDIRECTORY=/opt/hostedtoolcache RUNNER_TOOL_CACHE=/opt/hostedtoolcache
+RUN apt-get update && apt-get install -y --no-install-recommends gh build-essential \
+    && rm -rf /var/lib/apt/lists/*
 USER runner
 WORKDIR /home/runner
 CMD ["bash"]
