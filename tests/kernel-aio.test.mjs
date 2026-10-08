@@ -8,8 +8,8 @@ const source = (await readFile(new URL('../vps-site/src/relapse_exploit.js', imp
   .replace(/^import .*;\s*$/gm, '').replace('export async function', 'async function');
 const KernelExploit = vm.runInNewContext(source + '\nKernelExploit;', {
   int64,
-  SYS_READ: 0,
-  SYS_WRITE: 1,
+  SYS_READ: 0x003,
+  SYS_WRITE: 0x004,
 });
 
 function fixture(crossed = true) {
@@ -229,7 +229,10 @@ function crossedPipesFixture(probe) {
   };
   exploit.kwrite32 = async (address, value) => { fieldValues.set(address.low, value); return 0; };
   exploit.alloc = () => ({});
-  exploit.sysInt = async () => 1;
+  exploit.sysInt = async number => {
+    assert.equal(number, 0x003);
+    return 1;
+  };
   exploit.kreadFast = probe;
   exploit.readU8 = (_, index) => text.charCodeAt(index);
   exploit.report = () => {};
