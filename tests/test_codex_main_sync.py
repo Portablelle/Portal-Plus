@@ -17,6 +17,26 @@ sync = main_sync.sync
 
 
 class CodexHeadTests(unittest.TestCase):
+    def test_header_limits_cover_private_and_public_decoders(self):
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / 'delivery.tar.gz'
+            for case in ('Solaris oversized', 'Solaris consecutive', 'GNU sparse',
+                         'GNU sparse 0.0', 'GNU sparse 0.1', 'GNU sparse 1.0'):
+                with self.subTest(case=case):
+                    write_parser_archive(path, case, leading_member=True)
+                    with sync.codex_archive(path) as archive:
+                        self.assertEqual(archive.firstmember.name, 'leading')
+                        decoder = getattr(archive.tarinfo, '_fromtarfile', archive.tarinfo.fromtarfile)
+                        with ExitStack() as stack:
+                            for method in ('_proc_sparse', '_proc_gnusparse_00', '_proc_gnusparse_01', '_proc_gnusparse_10'):
+                                stack.enter_context(patch.object(tarfile.TarInfo, method,
+                                                                 side_effect=AssertionError('Sparse map parser was entered')))
+                            if hasattr(archive.tarinfo, '_fromtarfile'):
+                                stack.enter_context(patch.object(tarfile.TarInfo, 'frombuf',
+                                                                 side_effect=AssertionError('Public header decoder was used')))
+                            with self.assertRaisesRegex(RuntimeError, 'staging limits'):
+                                decoder(archive)
+
     def test_resolves_exact_main_sha_and_rejects_invalid_api_results(self):
         with patch.object(sync, 'command', return_value='a' * 40) as command:
             self.assertEqual(sync.codex_remote_head('Portablelle/Codex-PS5'), 'a' * 40)

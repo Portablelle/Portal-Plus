@@ -19,20 +19,18 @@ def source_archive(path):
     extensions = 0
 
     class LimitedInfo(tarfile.TarInfo):
-        @classmethod
-        def frombuf(cls, buf, encoding, errors):
+        def _proc_member(self, archive):
             nonlocal headers, extensions
-            if buf[156:157] == tarfile.GNUTYPE_SPARSE:
+            if self.type == tarfile.GNUTYPE_SPARSE:
                 raise ValueError('Codex source archive exceeds limits: sparse files are unsupported')
-            info = super().frombuf(buf, encoding, errors)
             headers += 1
-            metadata = info.type in (tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.SOLARIS_XHDTYPE,
+            metadata = self.type in (tarfile.XHDTYPE, tarfile.XGLTYPE, tarfile.SOLARIS_XHDTYPE,
                                     tarfile.GNUTYPE_LONGNAME, tarfile.GNUTYPE_LONGLINK)
             extensions = extensions + 1 if metadata else 0
             limit = 65536 if metadata else 32 * 1024 * 1024
-            if headers > 10000 or extensions > 64 or not 0 <= info.size <= limit:
+            if headers > 10000 or extensions > 64 or not 0 <= self.size <= limit:
                 raise ValueError('Codex source archive exceeds limits')
-            return info
+            return super()._proc_member(archive)
 
         def _proc_gnusparse_00(self, next, raw_headers):
             raise ValueError('Codex source archive exceeds limits: sparse files are unsupported')

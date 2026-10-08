@@ -17,8 +17,10 @@ compose = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(compose)
 
 
-def write_parser_archive(path, case):
+def write_parser_archive(path, case, leading_member=False):
     with tarfile.open(path, 'w:gz', format=tarfile.PAX_FORMAT) as archive:
+        if leading_member:
+            archive.addfile(tarfile.TarInfo('leading'))
         if case == 'Solaris oversized':
             raw = tarfile.TarInfo.create_pax_global_header({'comment': 'x' * 65537})
             header = tarfile.TarInfo.frombuf(raw[:512], 'utf-8', 'strict')
@@ -99,6 +101,25 @@ class CodexDeliveryFixture:
 
 
 class CodexContractTests(CodexDeliveryFixture, unittest.TestCase):
+    def test_header_limits_cover_private_and_public_decoders(self):
+        path = self.base / 'codex-source.tar.gz'
+        for case in ('Solaris oversized', 'Solaris consecutive', 'GNU sparse',
+                     'GNU sparse 0.0', 'GNU sparse 0.1', 'GNU sparse 1.0'):
+            with self.subTest(case=case):
+                write_parser_archive(path, case, leading_member=True)
+                with compose.source_archive(path) as archive:
+                    self.assertEqual(archive.firstmember.name, 'leading')
+                    decoder = getattr(archive.tarinfo, '_fromtarfile', archive.tarinfo.fromtarfile)
+                    with ExitStack() as stack:
+                        for method in ('_proc_sparse', '_proc_gnusparse_00', '_proc_gnusparse_01', '_proc_gnusparse_10'):
+                            stack.enter_context(patch.object(tarfile.TarInfo, method,
+                                                             side_effect=AssertionError('Sparse map parser was entered')))
+                        if hasattr(archive.tarinfo, '_fromtarfile'):
+                            stack.enter_context(patch.object(tarfile.TarInfo, 'frombuf',
+                                                             side_effect=AssertionError('Public header decoder was used')))
+                        with self.assertRaisesRegex(ValueError, 'exceeds limits'):
+                            decoder(archive)
+
     def test_solaris_metadata_and_sparse_maps_are_rejected_before_parsing(self):
         path = self.base / 'codex-source.tar.gz'
         with ExitStack() as stack:
