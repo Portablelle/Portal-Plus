@@ -61,6 +61,17 @@ There are no broader host directory mounts. Before registration, after every
 session, and on service stop, a bounded, network-disabled unprivileged container
 removes all home contents, retaining the filesystem. Failed cleanup prevents
 a new job. No dependency/source/credential cache is retained between jobs.
+Cleanup restores owner traversal/write permissions on directories before
+removal from an inode-anchored working directory, never following symlinks or
+holding one descriptor per nesting level. It runs under
+a host-side lock with the fixed container name `plus-codex-cleanup`, a 512 MiB
+memory ceiling, one linear scan per directory, and a
+25-second deadline. Each invocation reaps any previous deleter before starting,
+and stops/removes its own deleter on exit or timeout. If Docker cannot prove
+that the deleter is gone, registration remains blocked until recovery succeeds.
+Cleanup refuses to touch scratch while `plus-codex` is still running. Service
+stop cleanup runs even when API revocation fails or a local runner ID is
+malformed; a valid ID remains available for retry if revocation fails.
 An unexpected host power loss can leave data until startup cleanup; this
 scratch is not encrypted and must not hold long-lived administrative secrets.
 
