@@ -15,7 +15,10 @@ args = sys.argv[1:]
 with open(os.environ["COMMAND_LOG"], "a") as log:
     log.write(json.dumps([name, *args]) + "\\n")
 if name == "timeout":
-    sys.exit(subprocess.run(args[args.index("docker"):]).returncode)
+    command = next(index for index, arg in enumerate(args) if arg in ("docker", "sudo", "tail", "systemctl"))
+    sys.exit(subprocess.run(args[command:]).returncode)
+elif name == "systemctl":
+    print("MainPID=0\\nInvocationID=")
 elif name == "sudo" and "create" in args:
     print('{"runner":{"id":42},"encoded_jit_config":"test-jit"}')
 elif name == "jq":
@@ -34,7 +37,7 @@ class SlotTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             root = Path(directory)
             log = root / "commands.jsonl"
-            for name in ("docker", "sudo", "jq", "timeout", "sleep", "mountpoint", "findmnt", "flock"):
+            for name in ("docker", "sudo", "jq", "timeout", "sleep", "mountpoint", "findmnt", "flock", "systemctl"):
                 command = root / name
                 command.write_text(MOCK)
                 command.chmod(0o755)

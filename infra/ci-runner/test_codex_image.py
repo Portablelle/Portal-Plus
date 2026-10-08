@@ -51,8 +51,9 @@ class CodexImageTests(unittest.TestCase):
             controller_file = root / "controllers"
             if controllers is not None:
                 controller_file.write_text(controllers)
-            script = "\n".join(f'controllers="{controller_file}"' if line.startswith("controllers=") else line
-                               for line in (ROOT / "build-codex-image.sh").read_text().splitlines())
+            lines = (ROOT / "build-codex-image.sh").read_text().splitlines()
+            self.assertEqual(sum(line.startswith("controllers=") for line in lines), 1)
+            script = "\n".join(f'controllers="{controller_file}"' if line.startswith("controllers=") else line for line in lines)
             (infra / "build-codex-image.sh").write_text(script + "\n")
             shutil.copyfile(ROOT / "Dockerfile.codex", infra / "Dockerfile.codex")
             source = root / "source" / "vendor" / "ps5-ai-cli"
@@ -98,8 +99,10 @@ class CodexImageTests(unittest.TestCase):
         self.assertFalse(any(option in smoke for option in ("--privileged", "--mount", "--volume")))
 
     def test_identical_input_config_cannot_reuse_version_tag_for_distinct_images(self):
-        _, first, _ = self.invoke()
-        _, second, _ = self.invoke(built_image=OTHER_IMAGE)
+        first_result, first, _ = self.invoke()
+        second_result, second, _ = self.invoke(built_image=OTHER_IMAGE)
+        self.assertEqual(first_result.returncode, 0, first_result.stderr)
+        self.assertEqual(second_result.returncode, 0, second_result.stderr)
         labels = [next(command for command in commands if command[0] == "build") for commands in (first, second)]
         self.assertEqual(labels[0][labels[0].index("--label") + 1], labels[1][labels[1].index("--label") + 1])
         versions = [next(command[-1] for command in commands if command[0] == "tag" and command[-1].startswith("codex-runner:image-")) for commands in (first, second)]

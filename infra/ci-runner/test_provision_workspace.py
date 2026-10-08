@@ -23,18 +23,23 @@ if name == "sudo":
 elif name == "install":
     pathlib.Path(args[-1]).mkdir(parents=True, exist_ok=True)
 elif name == "df":
-    print("Avail\\n100000000000")
+    print("Avail\\n" + os.environ.get("FREE_BYTES", "100000000000"))
 elif name == "fallocate":
-    pathlib.Path(args[-1]).write_text("unformatted")
+    with open(args[-1], "r+b") as image:
+        image.write(b"unformatted\\0")
+        image.truncate(17179869184)
 elif name == "mkfs.ext4":
     if os.environ.get("FORMAT_FAILURE"):
         sys.exit(9)
-    pathlib.Path(args[-1]).write_text("ext4")
+    with open(args[-1], "r+b") as image:
+        image.write(b"ext4\\0")
 elif name == "stat":
     assert pathlib.Path(args[-1]).is_file()
-    print("17179869184")
+    print(pathlib.Path(args[-1]).stat().st_size)
 elif name == "blkid":
-    if pathlib.Path(args[-1]).read_text() not in ("ext4", "ext4-winner"):
+    with open(args[-1], "rb") as image:
+        marker = image.read(64).split(b"\\0", 1)[0].decode()
+    if marker not in ("ext4", "ext4-winner"):
         sys.exit(2)
     print("ext4")
 elif name == "ln":
@@ -42,7 +47,9 @@ elif name == "ln":
     assert pathlib.Path(args[-2]).is_relative_to(root) and pathlib.Path(args[-1]).is_relative_to(root)
     destination = pathlib.Path(args[-1])
     if os.environ.get("PUBLISH_RACE") and not destination.exists():
-        destination.write_text("ext4-winner" if os.environ["PUBLISH_RACE"] == "valid" else "broken-winner")
+        with destination.open("wb") as image:
+            image.write(b"ext4-winner\\0" if os.environ["PUBLISH_RACE"] == "valid" else b"broken-winner\\0")
+            image.truncate(17179869184)
         (root / "winner-inode").write_text(str(destination.stat().st_ino))
     try:
         os.link(args[-2], args[-1])
@@ -86,10 +93,20 @@ class WorkspaceProvisionTests(unittest.TestCase):
         self.env = {**os.environ, "PATH": f"{binaries}:{os.environ['PATH']}",
                     "COMMAND_LOG": str(self.log), "FIXTURE_ROOT": str(self.root)}
 
-    def invoke(self, format_failure=False, publication_race=""):
+    def invoke(self, format_failure=False, publication_race="", free_bytes=100000000000):
         return subprocess.run(["bash", str(self.script)], capture_output=True, text=True, timeout=20,
                               env={**self.env, "FORMAT_FAILURE": "1" if format_failure else "",
-                                   "PUBLISH_RACE": publication_race})
+                                   "PUBLISH_RACE": publication_race, "FREE_BYTES": str(free_bytes)})
+
+    def make_image(self, marker, size=17179869184):
+        self.state.mkdir(exist_ok=True)
+        with self.image.open("wb") as image:
+            image.write(marker.encode() + b"\0")
+            image.truncate(size)
+
+    def marker(self):
+        with self.image.open("rb") as image:
+            return image.read(64).split(b"\0", 1)[0].decode()
 
     def commands(self):
         return [json.loads(line) for line in self.log.read_text().splitlines()]
@@ -101,7 +118,8 @@ class WorkspaceProvisionTests(unittest.TestCase):
         self.assertEqual(list(self.state.glob(".workspace.*")), [])
         result = self.invoke()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.image.read_text(), "ext4")
+        self.assertEqual(self.marker(), "ext4")
+        self.assertEqual(self.image.stat().st_size, 17179869184)
         self.assertEqual(list(self.state.glob(".workspace.*")), [])
         publications = [command for command in self.commands() if command[0] == "ln"]
         self.assertEqual(len(publications), 1)
@@ -113,20 +131,19 @@ class WorkspaceProvisionTests(unittest.TestCase):
         self.assertEqual(len([command for command in self.commands() if command[0] == "mkfs.ext4"]), formats)
 
     def test_existing_sized_invalid_image_is_not_mounted_or_overwritten(self):
-        self.state.mkdir()
-        self.image.write_text("unformatted")
+        self.make_image("unformatted")
         fstab = self.fstab.read_text()
         result = self.invoke()
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("CODEX_WORKSPACE_IMAGE_INVALID", result.stderr)
-        self.assertEqual(self.image.read_text(), "unformatted")
+        self.assertEqual(self.marker(), "unformatted")
         self.assertEqual(self.fstab.read_text(), fstab)
         self.assertFalse(any(command[0] in ("mkfs.ext4", "ln", "mount") for command in self.commands()))
 
     def test_concurrent_valid_winner_is_retained_without_inode_replacement(self):
         result = self.invoke(publication_race="valid")
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.image.read_text(), "ext4-winner")
+        self.assertEqual(self.marker(), "ext4-winner")
         self.assertEqual(str(self.image.stat().st_ino), (self.root / "winner-inode").read_text())
         self.assertEqual(list(self.state.glob(".workspace.*")), [])
         self.assertFalse(any(command[0] == "mv" for command in self.commands()))
@@ -135,10 +152,31 @@ class WorkspaceProvisionTests(unittest.TestCase):
         result = self.invoke(publication_race="invalid")
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("CODEX_WORKSPACE_IMAGE_INVALID", result.stderr)
-        self.assertEqual(self.image.read_text(), "broken-winner")
+        self.assertEqual(self.marker(), "broken-winner")
         self.assertEqual(str(self.image.stat().st_ino), (self.root / "winner-inode").read_text())
         self.assertEqual(list(self.state.glob(".workspace.*")), [])
         self.assertFalse(any(command[0] in ("mount", "chown") for command in self.commands()))
+
+    def test_wrong_size_is_rejected_without_changing_existing_image(self):
+        self.make_image("ext4", size=1024)
+        result = self.invoke()
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("CODEX_WORKSPACE_IMAGE_INVALID", result.stderr)
+        self.assertEqual(self.image.stat().st_size, 1024)
+        self.assertEqual(self.marker(), "ext4")
+        self.assertFalse(any(command[0] in ("fallocate", "mkfs.ext4", "ln", "mount") for command in self.commands()))
+
+    def test_low_space_rejects_allocation_and_preserves_local_files(self):
+        sentinel = self.workspace / "keep"
+        sentinel.write_text("untouched")
+        fstab = self.fstab.read_text()
+        result = self.invoke(free_bytes=1024)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("20 GiB free disk", result.stderr)
+        self.assertFalse(self.image.exists())
+        self.assertEqual(sentinel.read_text(), "untouched")
+        self.assertEqual(self.fstab.read_text(), fstab)
+        self.assertFalse(any(command[0] in ("fallocate", "mkfs.ext4", "ln", "mount") for command in self.commands()))
 
 
 if __name__ == "__main__":

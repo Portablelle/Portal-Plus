@@ -288,8 +288,12 @@ def sync_main(repository, state, root, botty_repository=None, codex_repository=N
                          '--commit', codex_head])
             validator = source / 'scripts/portal-manifest.py'
             portal = source / 'vps-site'
-            inventory = json.loads((portal / 'manifest.json').read_text())['sha256']
-            export_size = (portal / 'manifest.json').stat().st_size + sum(
+            manifest_path = portal / 'manifest.json'
+            if manifest_path.stat().st_size > 4 * 1024 * 1024:
+                raise RuntimeError('Portal manifest exceeds staging limit')
+            command([sys.executable, str(validator), '--root', str(portal), '--check'])
+            inventory = json.loads(manifest_path.read_text())['sha256']
+            export_size = manifest_path.stat().st_size + sum(
                 (portal / name).stat().st_size for name in inventory)
             if shutil.disk_usage(releases).free < export_size + 512 * 1024 * 1024:
                 raise RuntimeError('Insufficient free space for portal export')

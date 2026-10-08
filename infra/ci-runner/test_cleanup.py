@@ -19,24 +19,64 @@ state = json.loads(state_path.read_text())
 with open(os.environ["COMMAND_LOG"], "a") as log:
     log.write(json.dumps([name, *args]) + "\\n")
 if name == "timeout":
-    command = next(index for index, arg in enumerate(args) if arg in ("docker", "sudo"))
+    command = next(index for index, arg in enumerate(args) if arg in ("docker", "sudo", "tail", "systemctl"))
     sys.exit(subprocess.run(args[command:]).returncode)
+if name == "tail":
+    pid = int(next(arg.split("=", 1)[1] for arg in args if arg.startswith("--pid=")))
+    deadline = time.monotonic() + 5
+    while True:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            break
+        if time.monotonic() > deadline:
+            sys.exit(1)
+        time.sleep(0.01)
+if name == "systemctl":
+    assert args == ["--user", "show", "plus-runner@codex.service", "--property=MainPID", "--property=InvocationID"], args
+    if state.get("unit_query_failure"):
+        sys.exit(1)
+    pid = "0"
+    if state.get("managed_context"):
+        pid_file = pathlib.Path(os.environ["XDG_RUNTIME_DIR"]) / "slot-pid"
+        deadline = time.monotonic() + 5
+        while not pid_file.exists():
+            if time.monotonic() > deadline:
+                raise RuntimeError("missing slot process PID")
+            time.sleep(0.01)
+        pid = pid_file.read_text().strip()
+    invocation = "b" * 32 if state.get("different_invocation") else os.environ.get("INVOCATION_ID", "")
+    print("MainPID=" + pid + "\\nInvocationID=" + invocation)
 if name == "findmnt":
     print("ext4")
 elif name == "sudo":
-    assert args == ["-n", "/usr/local/sbin/plus-runner-api", "codex", "delete", "42"], args
-    sys.exit(state.get("broker_failure", 0))
+    if args == ["-n", "/usr/local/sbin/plus-runner-api", "codex", "create"]:
+        print('{"runner":{"id":42},"encoded_jit_config":"test-jit"}')
+    else:
+        assert args == ["-n", "/usr/local/sbin/plus-runner-api", "codex", "delete", "42"], args
+        sys.exit(state.get("broker_failure", 0))
+elif name == "jq":
+    print("42" if ".runner.id" in " ".join(args) else "test-jit")
 elif name == "docker":
     if args[0] == "stop" and args[-1] == "plus-codex" and state.get("signal_stop") and not state.get("signal_sent"):
         pid_file = pathlib.Path(os.environ["XDG_RUNTIME_DIR"]) / "stop-pid"
         deadline = time.monotonic() + 5
-        while not pid_file.exists():
+        while True:
+            try:
+                pid = pid_file.read_text().strip()
+            except FileNotFoundError:
+                pid = ""
+            if pid.isdigit():
+                break
             if time.monotonic() > deadline:
                 raise RuntimeError("missing stop process PID")
             time.sleep(0.01)
         state["signal_sent"] = True
         state_path.write_text(json.dumps(state))
-        os.kill(int(pid_file.read_text()), signal.SIGTERM)
+        os.kill(int(pid), signal.SIGTERM)
+    if args[0] in ("stop", "rm") and args[-1] == "plus-codex":
+        state["active_job"] = False
+        state["created_job"] = False
     if args[0] in ("stop", "rm") and args[-1] == "plus-codex-cleanup":
         if not state.get("unreapable"):
             state["orphan"] = False
@@ -63,6 +103,15 @@ elif name == "docker":
         state["orphan"] = False
         state_path.write_text(json.dumps(state))
         sys.exit(result.returncode)
+    elif args[0] == "start" and state.get("hold_slot"):
+        state["active_job"] = True
+        state_path.write_text(json.dumps(state))
+        pathlib.Path(os.environ["TEST_HOME"], "data").write_text("job-data")
+        pathlib.Path(os.environ["XDG_RUNTIME_DIR"], "slot-started").touch()
+        parent = os.getppid()
+        while os.getppid() == parent:
+            time.sleep(0.01)
+        sys.exit(0)
 state_path.write_text(json.dumps(state))
 '''
 
@@ -142,7 +191,9 @@ class CleanupTests(unittest.TestCase):
                 (self.home / "data").write_text("remove")
                 process = subprocess.Popen(["bash", str(ROOT / "stop-slot.sh"), "codex"],
                                            env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-                (self.root / "stop-pid").write_text(str(process.pid))
+                pending = self.root / "stop-pid.pending"
+                pending.write_text(str(process.pid))
+                pending.replace(self.root / "stop-pid")
                 _, stderr = process.communicate(timeout=20)
                 self.assertEqual(process.returncode, failure, stderr)
                 self.assertTrue(json.loads(self.state.read_text())["signal_sent"])
@@ -153,6 +204,17 @@ class CleanupTests(unittest.TestCase):
                 self.assertEqual(list(self.home.iterdir()), [])
                 self.assertIn(["docker", "rm", "-f", "plus-codex"], self.commands())
                 self.assertIn(["sudo", "-n", "/usr/local/sbin/plus-runner-api", "codex", "delete", "42"], self.commands())
+
+    def test_api_failure_status_survives_independent_workspace_failure(self):
+        self.state.write_text(json.dumps({"broker_failure": 7, "orphan": True, "unreapable": True}))
+        runtime = self.root / "plus-runner-codex"
+        runtime.mkdir()
+        (runtime / "runner-id").write_text("42\n")
+        result = self.invoke("stop-slot.sh")
+        self.assertEqual(result.returncode, 7, result.stderr)
+        self.assertEqual((runtime / "runner-id").read_text(), "42\n")
+        self.assertIn("JIT_CLEANUP_FAILED", result.stderr)
+        self.assertIn("CODEX_WORKSPACE_CLEANUP_FAILED", result.stderr)
 
     def test_deep_tree_cleans_with_a_small_descriptor_limit(self):
         self.state.write_text(json.dumps({"low_fd_limit": True}))

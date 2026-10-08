@@ -167,7 +167,17 @@ identity; failed deletions retain their ID and are retried before a new
 registration. `ExecStopPost=stop-slot.sh` also stops/removes the container and
 revokes the identity after an unexpected/forced slot exit. The additive installer
 installs a Codex-only `TimeoutStopSec=180` drop-in; Botty/Portal retain the template
-default of 90 seconds. The Codex finalizer has a 147-second worst-case CLI budget:
+default of 90 seconds. Startup verifies the Codex unit MainPID equals the slot
+PID and its InvocationID matches the inherited ID using one local query with a
+two-second deadline plus two-second forced-kill grace. The result is retained
+inside the process, not trusted from an environment marker. For that verified
+managed context, Codex slot EXIT only
+terminates/reaps its own background clients or retry timers (at most seven
+seconds) and removes the transient environment file. `ExecStopPost` exclusively
+owns full teardown, including after a forced main-process kill. No completion
+marker can suppress recovery; manual or unverifiable-context exits call the same
+stop helper directly. The complete TERM/EXIT/post-stop budget is 154 seconds,
+with exactly one 147-second full teardown:
 27 seconds to stop, 12 to remove, 37 for the broker (35 plus forced-kill grace),
 and 71 for workspace cleanup including lock wait, checks, and both orphan-reaping
 passes. Every timed client gets a two-second forced-kill grace, so ignoring TERM

@@ -22,10 +22,12 @@ finish() {
       rm -f "$state/runner-id"
     else
       status=$?
+      echo "JIT_CLEANUP_FAILED: preserving runner $runner_id for retry." >&2
     fi
   fi
   if [[ $slot == codex ]] && ! bash "$(dirname "$0")/clean-codex-workspace.sh"; then
-    status=1
+    echo "CODEX_WORKSPACE_CLEANUP_FAILED: local teardown cleanup did not complete." >&2
+    if ((status == 0)); then status=1; fi
   fi
   exit "$status"
 }

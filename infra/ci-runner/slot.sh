@@ -21,6 +21,7 @@ state="${XDG_RUNTIME_DIR:?}/plus-runner-$slot"
 mkdir -p "$state"
 runner_id=
 env_file=
+managed_codex=false
 admission_locked=false
 release_admission() {
   if $admission_locked; then
@@ -42,15 +43,42 @@ unregister() {
 cleanup() {
   release_admission
   [[ -z "$env_file" ]] || rm -f "$env_file"
+  if [[ $slot == codex ]]; then
+    local pid
+    local clients=()
+    for pid in $(jobs -pr); do clients+=("$pid"); done
+    if ((${#clients[@]})); then
+      kill -KILL "${clients[@]}" >/dev/null 2>&1 || true
+      if timeout --kill-after=2 5 tail "${clients[@]/#/--pid=}" --sleep-interval=0.1 -f /dev/null >/dev/null 2>&1; then
+        wait "${clients[@]}" 2>/dev/null || true
+      fi
+    fi
+    if ! $managed_codex; then
+      bash "$(dirname "$0")/stop-slot.sh" "$slot" || true
+    fi
+    return
+  fi
   timeout 25 docker stop --time 20 "$container" >/dev/null 2>&1 || true
   timeout 10 docker rm -f "$container" >/dev/null 2>&1 || true
   unregister || true
-  if [[ $slot == codex ]]; then
-    bash "$(dirname "$0")/clean-codex-workspace.sh" || true
-  fi
 }
 trap 'exit 0' TERM INT
 trap cleanup EXIT
+if [[ $slot == codex && ${INVOCATION_ID:-} =~ ^[0-9a-fA-F]{32}$ ]]; then
+  if unit_state=$(timeout --kill-after=2 2 systemctl --user show plus-runner@codex.service --property=MainPID --property=InvocationID); then
+    unit_pid=
+    unit_invocation=
+    while IFS='=' read -r property value; do
+      case "$property" in
+        MainPID) unit_pid=$value ;;
+        InvocationID) unit_invocation=$value ;;
+      esac
+    done <<<"$unit_state"
+    if [[ $unit_pid == "$$" && $unit_invocation == "$INVOCATION_ID" ]]; then
+      managed_codex=true
+    fi
+  fi
+fi
 docker rm -f "$container" >/dev/null 2>&1 || true
 retry_delay=15
 backoff() {
