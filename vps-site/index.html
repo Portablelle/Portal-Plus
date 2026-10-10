@@ -8,14 +8,16 @@
   <link rel="stylesheet" href="./portal.css">
 </head>
 <body>
+  <a class="skip-link" href="#launch">Skip to launch</a>
   <main>
-    <header><span class="brand"><i class="brand-mark" aria-hidden="true"></i>PORTAL+ <span>/ PS5</span></span><span id="firmware">Checking console…</span></header>
-    <section class="launch-area" aria-label="Launch your PS5 session">
-      <div class="arena" aria-hidden="true"><div class="orbit orbit-outer"></div><div class="orbit orbit-inner"></div><span class="arena-cross cross-left">+</span><span class="arena-cross cross-right">+</span></div>
-      <p class="eyebrow">YOUR CONSOLE. UNLOCKED.</p>
-      <div class="launch-frame"><button id="launch" type="button" aria-describedby="status">LAUNCH</button></div>
-      <p id="status" role="status" aria-live="polite">Jailbreak and your selected apps. One launch.</p>
-      <p class="hint">Keep this page open. Installed apps are reused.</p>
+    <header><span class="brand"><i class="brand-mark" aria-hidden="true"></i>PORTAL+ <span>PS5 SESSION CONTROL</span></span><nav class="header-tools" aria-label="Session tools"><a href="#launch-options">Launch options</a><a href="#console">Session log</a><span id="firmware">Checking console…</span></nav></header>
+    <section class="launch-area" aria-labelledby="launch-title">
+      <div class="launch-copy">
+        <p class="eyebrow">01 / LAUNCH YOUR SESSION</p>
+        <h1 id="launch-title">Your next session.<br>One launch.</h1>
+        <p id="status" role="status" aria-live="polite">Jailbreak and your selected apps. One launch.</p>
+      </div>
+      <div class="launch-frame"><button id="launch" type="button" aria-describedby="status">LAUNCH</button><p class="hint">Keep this page open.<br>Installed apps are reused.</p></div>
     </section>
     <section id="launch-progress" aria-labelledby="launch-progress-title" hidden>
       <div class="progress-heading"><h2 id="launch-progress-title">Launch progress</h2><span id="launch-elapsed" aria-live="off">0s elapsed</span></div>
@@ -31,32 +33,37 @@
       </nav>
     </section>
     <section id="session-result" aria-label="Session result" aria-live="polite" hidden></section>
-    <details id="launch-options">
-      <summary>Launch options <span id="launch-options-summary" aria-live="polite" aria-atomic="true">Botty+ (includes rTorrent), FTP, CheatRunner</span></summary>
+    <div class="session-tools">
+    <details id="launch-options" open>
+      <summary>Your loadout <span id="launch-options-summary" aria-live="polite" aria-atomic="true">Botty+ (includes rTorrent), FTP, CheatRunner</span></summary>
       <fieldset id="launch-services">
-        <legend>Start with LAUNCH</legend>
+        <legend class="visually-hidden">Start with LAUNCH</legend>
         <div class="service-options">
           <label><input type="checkbox" name="botty" checked><span><strong>Botty+</strong><small>Download manager and Library · includes rTorrent</small></span></label>
           <label><input type="checkbox" name="ftp" checked><span><strong>FTP</strong><small>File transfers</small></span></label>
           <label id="rtorrent-option"><input type="checkbox" name="rtorrent" checked><span><strong>rTorrent</strong><small>Start independently of Botty+</small></span></label>
-          <div id="rtorrent-included" class="included-service" hidden><span><strong>rTorrent included</strong><small>Started with Botty+ · no separate selection needed</small></span></div>
           <label><input type="checkbox" name="cheatrunner" checked><span><strong>CheatRunner</strong><small>Game cheats</small></span></label>
         </div>
-        <div class="service-options optional-patch">
-          <label><input type="checkbox" name="codex"><span><strong>Codex PS5 (prototype)</strong><small>Install, auto-update and start · local voice dictation</small></span></label>
-          <label><input type="checkbox" name="ppr" aria-describedby="ppr-availability ppr-warning"><span><strong>A53 PPR patch</strong><small>Optional game compatibility patch · PS5 firmware ≤ 11.40 only</small></span></label>
-        </div>
-        <p>Unchecked options skip installation and startup for this launch. Installed apps and services already running are left intact.</p>
-        <p id="ppr-availability" hidden></p>
-        <p id="ppr-warning">For A53 PPR, close games first and wait for all game mounts and unmounts to finish. After sending, confirm its success notification before continuing.</p>
+        <div id="rtorrent-included" class="included-service" hidden>rTorrent starts with Botty+ · no separate selection needed.</div>
+        <p class="options-note">Unchecked options skip installation and startup for this launch. Installed apps and services already running are left intact.</p>
+        <details id="launch-advanced" class="advanced-options">
+          <summary>Advanced options <span>Codex PS5, A53 PPR patch</span></summary>
+          <div class="service-options optional-patch">
+            <label><input type="checkbox" name="codex"><span><strong>Codex PS5 (prototype)</strong><small>Install, auto-update and start · local voice dictation</small></span></label>
+            <label><input type="checkbox" name="ppr" aria-describedby="ppr-availability ppr-warning"><span><strong>A53 PPR patch</strong><small>Optional game compatibility patch · PS5 firmware ≤ 11.40 only</small></span></label>
+          </div>
+          <p id="ppr-availability" hidden></p>
+          <p id="ppr-warning">For A53 PPR, close games first and wait for all game mounts and unmounts to finish. After sending, confirm its success notification before continuing.</p>
+        </details>
         <p id="launch-options-storage" role="status" hidden></p>
       </fieldset>
     </details>
     <section id="diagnostics" aria-labelledby="diagnostics-title">
-      <h2 id="diagnostics-title">Session log</h2>
+      <div class="log-heading"><h2 id="diagnostics-title">Session log</h2><span>Live activity</span></div>
       <div id="console" role="log" tabindex="0"><div>Ready. Select LAUNCH to start.</div></div>
     </section>
-    <footer><span class="footer-label">PS5 PORTAL / 01</span><span>ONE TOUCH. ALL SYSTEMS.</span></footer>
+    </div>
+    <footer><span>Portal+ / PS5</span><span>Your console. Your loadout.</span></footer>
   </main>
   <script src="./src/firmware.js"></script>
   <script src="./src/main.js"></script>

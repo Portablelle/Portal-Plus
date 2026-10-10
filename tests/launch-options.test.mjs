@@ -5,7 +5,7 @@ import { bindLaunchOptions, normalizeLaunchServices, supportsPpr } from '../vps-
 function fixture(saved, unavailable = false, firmware = '11.20') {
   const inputs = ['ftp', 'rtorrent', 'cheatrunner', 'ppr', 'codex', 'botty'].map(name => ({ name, addEventListener(_, handler) { this.change = handler; } }));
   const elements = { 'launch-services': { querySelector: selector => inputs.find(input => selector.includes('"' + input.name + '"')) },
-    'launch-options-storage': {}, 'launch-options-summary': {}, 'launch-options': { open: true },
+    'launch-options-storage': {}, 'launch-options-summary': {}, 'launch-options': { open: true }, 'launch-advanced': { open: false },
     'rtorrent-option': {}, 'rtorrent-included': {}, 'ppr-availability': {} };
   const browser = { fw_str: firmware, get localStorage() {
     if (unavailable) throw Error('Storage blocked');
@@ -97,6 +97,15 @@ test('incompatible PPR stays out of the launch but retains its saved opt-in', ()
   const compatible = fixture(f.saved(), false, '11.40');
   assert.equal(compatible.elements['ppr-availability'].hidden, true);
   assert.equal(compatible.control.lock().ppr, true);
+});
+
+test('PPR prerequisites are exposed for restored and newly selected compatible patches', () => {
+  assert.equal(fixture('{"ppr":true}').elements['launch-advanced'].open, true);
+  assert.equal(fixture('{"ppr":true}', false, '11.60').elements['launch-advanced'].open, false);
+  const f = fixture(null);
+  assert.equal(f.elements['launch-advanced'].open, false);
+  f.inputs[3].checked = true; f.inputs[3].change();
+  assert.equal(f.elements['launch-advanced'].open, true);
 });
 for (const unavailable of [false, true]) test('invalid or unavailable storage still allows selection: ' + unavailable, () => {
   const f = fixture('{broken', unavailable);
