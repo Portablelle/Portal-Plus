@@ -78,6 +78,13 @@ body[data-state="error"] .orbit::before, body[data-state="error"] .orbit::after 
 body[data-state="launching"] *, body[data-state="launching"] *::before,
 body[data-state="launching"] *::after, body[data-state="launching"]::before,
 body[data-state="launching"]::after { animation: none !important; transition: none !important; }
+/* Ending setup must not restart entry animations around diagnostic text. */
+body[data-state="ready"] *, body[data-state="ready"] *::before,
+body[data-state="ready"] *::after, body[data-state="ready"]::before,
+body[data-state="ready"]::after,
+body[data-state="error"] *, body[data-state="error"] *::before,
+body[data-state="error"] *::after, body[data-state="error"]::before,
+body[data-state="error"]::after { animation: none !important; transition: none !important; }
 
 #cheatrunner { position: relative; color: #a8f3e2; padding: 10px 18px; margin: 0 0 12px; border: 1px solid #477f83; border-radius: 8px; text-decoration: none; font-size: 14px; }
 #cheatrunner:focus { outline: 2px solid #a8f3e2; outline-offset: 4px; }
