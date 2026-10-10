@@ -3,6 +3,7 @@ import { installWindowP } from "./utils/mem.js";
 
 
 
+import { SessionLog, SessionLogIO } from './session-log.js';
 import { renderSessionResult } from './session-result.js';
 import { renderPostLaunch } from './post-launch.js';
 import { atStage, diagnosticError, failureStatus, safeLog } from './diagnostics.js';
@@ -13,6 +14,7 @@ import { bindLaunchProgress, progressReporter } from './launch-progress.js';
 
 const output = document.getElementById("console");
 let launchStartedAt = null;
+let sessionLog = null;
 
 function writeLog(message, type = "log", replace = false) {
   let line = replace ? output.lastElementChild : null;
@@ -25,6 +27,7 @@ function writeLog(message, type = "log", replace = false) {
   if (type === "info" || type === "success") marker = "+";
   const elapsed = launchStartedAt === null ? "" : `${Math.floor((performance.now() - launchStartedAt) / 1000)}s `;
   line.textContent = `${elapsed}[${marker}] ${safeLog(message)}`;
+  sessionLog?.append(line.textContent);
   output.scrollTop = output.scrollHeight;
 }
 
@@ -100,6 +103,7 @@ button.addEventListener("click", async () => {
   const services = launchOptions.lock();
   started = true;
   launchStartedAt = performance.now();
+  sessionLog = new SessionLog();
   try { progress.start(services); } catch {}
   document.body.dataset.state = "launching";
   button.disabled = true;
@@ -116,6 +120,8 @@ button.addEventListener("click", async () => {
     const result = await launchSession({
       jailbreak: async () => { await atStage('Firmware offsets loading', () => window.offsetsReady); return await run(); },
       report,
+      onIO: io => sessionLog.attach(new SessionLogIO(io.runtime)),
+      saveLog: () => sessionLog.flush(),
       services,
       onProgress: reportProgress,
       firmware: window.fw_str,
@@ -144,6 +150,7 @@ button.addEventListener("click", async () => {
     }
     document.getElementById('cheatrunner').hidden = !result.cheatrunner?.ready;
     document.body.dataset.state = "ready";
+    writeLog(status.textContent, "success");
   } catch (error) {
     button.textContent = "STOPPED";
     status.textContent = safeLog(failureStatus(error));
@@ -154,6 +161,13 @@ button.addEventListener("click", async () => {
     writeLog(`${error.stage || 'Session setup'} [${error.code || 'STEP_FAILED'}]: ${error.logMessage || error.message || String(error)}`, "error");
     document.body.dataset.state = "error";
   } finally {
+    if (sessionLog.io) {
+      writeLog('Session log FTP path: ' + sessionLog.path, 'info');
+      await sessionLog.flush();
+    }
+    if (sessionLog.error) writeLog('Console log saving stopped: ' + sessionLog.error +
+      (sessionLog.saved ? '. The last saved checkpoint remains at ' + sessionLog.path : '. No console log was saved.'), 'error');
+    else if (!sessionLog.io) writeLog('Console log unavailable: filesystem access was not established.', 'info');
     reportProgress({ type: 'end', failed: document.body.dataset.state === 'error' });
     button.setAttribute("aria-busy", "false");
   }
