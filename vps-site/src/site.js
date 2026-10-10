@@ -17,23 +17,49 @@ let launchStartedAt = null;
 let sessionLog = null;
 
 function writeLog(message, type = "log", replace = false) {
-  let line = replace ? output.lastElementChild : null;
-  if (!line) {
-    line = document.createElement("div");
-    output.appendChild(line);
-  }
   let marker = "*";
   if (type === "error") marker = "-";
   if (type === "info" || type === "success") marker = "+";
   const elapsed = launchStartedAt === null ? "" : `${Math.floor((performance.now() - launchStartedAt) / 1000)}s `;
-  line.textContent = `${elapsed}[${marker}] ${safeLog(message)}`;
-  sessionLog?.append(line.textContent);
-  output.scrollTop = output.scrollHeight;
+  const text = `${elapsed}[${marker}] ${safeLog(message)}`;
+  // Capture first: DOM failures must not remove diagnostic evidence or abort
+  // setup. The file checkpoint uses this buffer, independently of the screen.
+  sessionLog?.append(text);
+  try {
+    let line = replace ? output.lastElementChild : null;
+    if (!line) {
+      line = document.createElement("div");
+      output.appendChild(line);
+    }
+    line.textContent = text;
+    output.scrollTop = output.scrollHeight;
+  } catch (error) {
+    sessionLog?.append('[LOG_RENDER_FAILED] ' + (error?.message || String(error)));
+    try { output.textContent = sessionLog ? sessionLog.header + sessionLog.text : text; } catch {}
+  }
 }
 
 function writeEvent(name, detail, type) {
   writeLog(detail == null || detail === "" ? name : `${name}: ${detail}`,
     type || (name === "Failed" ? "error" : "log"));
+}
+
+function renderResults(summary) {
+  for (const [name, render] of [['Session results', renderSessionResult], ['Next steps', renderPostLaunch]]) {
+    try { render(document, summary); }
+    catch (error) { writeLog(`[RESULT_RENDER_FAILED] ${name}: ${error?.message || String(error)}`, 'error'); }
+  }
+}
+
+function renderLogSnapshot() {
+  // Rebuild as plain text after result panels change the page layout. Keep the
+  // saved buffer even if the browser cannot repaint the existing log nodes.
+  try {
+    output.textContent = sessionLog.header + sessionLog.text;
+    output.scrollTop = output.scrollHeight;
+  } catch (error) {
+    sessionLog.append('[LOG_RENDER_FAILED] ' + (error?.message || String(error)));
+  }
 }
 
 window.writeLog = writeLog;
@@ -140,8 +166,6 @@ button.addEventListener("click", async () => {
       }),
     });
     button.textContent = "LAUNCH";
-    renderSessionResult(document, result.summary);
-    renderPostLaunch(document, result.summary);
     status.textContent = result.summary.outcome === 'complete'
       ? 'Session complete. See next steps and component confirmations below.'
       : 'Jailbreak succeeded. See next steps and warnings below; confirmed services remain available.';
@@ -151,23 +175,29 @@ button.addEventListener("click", async () => {
     document.getElementById('cheatrunner').hidden = !result.cheatrunner?.ready;
     document.body.dataset.state = "ready";
     writeLog(status.textContent, "success");
+    await sessionLog.flush();
+    renderResults(result.summary);
   } catch (error) {
+    const detail = safeLog(`${error.stage || 'Session setup'} [${error.code || 'STEP_FAILED'}]: ${error.logMessage || error.message || String(error)}`);
+    writeLog(detail, "error");
+    // Save the original failure before any result panel can throw or the user
+    // sees STOPPED and closes the browser.
+    await sessionLog.flush();
     button.textContent = "STOPPED";
-    status.textContent = safeLog(failureStatus(error));
-    if (error.sessionResult) {
-      renderSessionResult(document, error.sessionResult);
-      renderPostLaunch(document, error.sessionResult);
-    }
-    writeLog(`${error.stage || 'Session setup'} [${error.code || 'STEP_FAILED'}]: ${error.logMessage || error.message || String(error)}`, "error");
+    status.textContent = safeLog(failureStatus(error)) + ' ' + detail;
     document.body.dataset.state = "error";
+    if (error.sessionResult) renderResults(error.sessionResult);
   } finally {
     if (sessionLog.io) {
       writeLog('Session log FTP path: ' + sessionLog.path, 'info');
-      await sessionLog.flush();
     }
     if (sessionLog.error) writeLog('Console log saving stopped: ' + sessionLog.error +
       (sessionLog.saved ? '. The last saved checkpoint remains at ' + sessionLog.path : '. No console log was saved.'), 'error');
     else if (!sessionLog.io) writeLog('Console log unavailable: filesystem access was not established.', 'info');
+    renderLogSnapshot();
+    await sessionLog.flush();
+    // A final disk failure must also be visible outside the log panel.
+    if (sessionLog.error) status.textContent += ' Console log saving failed: ' + sessionLog.error;
     reportProgress({ type: 'end', failed: document.body.dataset.state === 'error' });
     button.setAttribute("aria-busy", "false");
   }

@@ -228,3 +228,64 @@ test('screen saves the final failure detail outside Botty storage before returni
   assert.doesNotMatch(log,/private/);
   assert.equal(view.document.body.dataset.state,'error');
 });
+
+test('failure is saved before broken result panels render and retains its original status',async()=>{
+  const files=new Map(),renders=[];
+  const io={mkdirs:async()=>{},writeFile:async(path,bytes)=>files.set(path,new TextDecoder().decode(bytes))};
+  const failedRender=name=>()=>{
+    assert.match([...files.values()][0],/Cannot access directory: \/data\/botty/);
+    renders.push(name);throw Error(name+' display unavailable token=private');
+  };
+  const view=screen('PlayStation 5/13.00',async({onIO})=>{
+    await onIO({});
+    throw Object.assign(Error('Cannot access directory: /data/botty'),{
+      stage:'Botty+ manager installation / startup',sessionResult:{outcome:'blocked',components:{}},
+    });
+  },{SessionLogIO:class {constructor(){return io;}},renderSessionResult:failedRender('results'),renderPostLaunch:failedRender('next steps')});
+  await view.elements.get('launch').listeners.click();
+  const log=[...files.values()][0];
+  assert.match(log,/Cannot access directory: \/data\/botty/);
+  assert.match(log,/RESULT_RENDER_FAILED.*results/);
+  assert.match(log,/RESULT_RENDER_FAILED.*next steps/);
+  assert.doesNotMatch(log,/private/);
+  assert.deepEqual(renders,['results','next steps']);
+  assert.match(view.elements.get('status').textContent,/Botty\+ manager installation \/ startup failed/);
+  assert.match(view.elements.get('status').textContent,/Cannot access directory: \/data\/botty/);
+  assert.equal(view.document.body.dataset.state,'error');
+  assert.equal(view.elements.get('launch').attributes['aria-busy'],'false');
+  assert.match(view.elements.get('console').textContent,/Cannot access directory: \/data\/botty/);
+});
+
+test('broken log DOM does not abort launch or prevent the final error file',async()=>{
+  let view;const files=new Map();
+  const io={mkdirs:async()=>{},writeFile:async(path,bytes)=>files.set(path,new TextDecoder().decode(bytes))};
+  view=screen('PlayStation 5/13.00',async({onIO,report})=>{
+    await onIO({});
+    view.elements.get('console').appendChild=()=>{throw Error('DOM unavailable');};
+    report('Preparing Botty service');
+    throw Object.assign(Error('Cannot access directory: /data/botty'),{stage:'Botty+ manager installation / startup'});
+  },{SessionLogIO:class {constructor(){return io;}}});
+  await view.elements.get('launch').listeners.click();
+  const log=[...files.values()][0];
+  assert.match(log,/Preparing Botty service/);
+  assert.match(log,/LOG_RENDER_FAILED.*DOM unavailable/);
+  assert.match(log,/Cannot access directory: \/data\/botty/);
+  assert.match(view.elements.get('console').textContent,/Cannot access directory: \/data\/botty/);
+  assert.equal(view.elements.get('launch').textContent,'STOPPED');
+  assert.equal(view.elements.get('launch').attributes['aria-busy'],'false');
+});
+
+test('successful setup remains ready when result rendering fails',async()=>{
+  const files=new Map();
+  const io={mkdirs:async()=>{},writeFile:async(path,bytes)=>files.set(path,new TextDecoder().decode(bytes))};
+  const view=screen('PlayStation 5/13.00',async({onIO})=>{
+    await onIO({});return {summary:{outcome:'complete',components:{}},cheatrunner:{ready:false},codex:{ready:false}};
+  },{SessionLogIO:class {constructor(){return io;}},renderSessionResult:()=>{throw Error('Results unavailable');}});
+  await view.elements.get('launch').listeners.click();
+  assert.equal(view.document.body.dataset.state,'ready');
+  assert.match(view.elements.get('status').textContent,/Session complete/);
+  const log=[...files.values()][0];
+  assert.match(log,/Session complete/);
+  assert.match(log,/RESULT_RENDER_FAILED.*Results unavailable/);
+  assert.doesNotMatch(log,/Session setup.*STEP_FAILED/);
+});
