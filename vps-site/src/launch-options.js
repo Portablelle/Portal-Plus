@@ -36,6 +36,8 @@ export function bindLaunchOptions(document, browser) {
     document.getElementById('rtorrent-option').hidden = botty.checked;
     document.getElementById('rtorrent-included').hidden = !botty.checked;
     const selected = read();
+    // Restored patch choices must expose their prerequisites before launch.
+    if (selected.ppr) document.getElementById('launch-advanced').open = true;
     const names = [];
     if (selected.botty) names.push('Botty+ (includes rTorrent)');
     if (selected.ftp) names.push('FTP');
