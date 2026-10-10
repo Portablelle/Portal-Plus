@@ -53,6 +53,17 @@ the console's Internet test may fail even when the portal is reachable.
 
 The DNS redirect route still needs hardware acceptance on each intended setup;
 tested native navigation does not validate the Guide's certificate behavior.
+
+The portal saves a separate timestamped session log under
+`/data/portal-plus/logs/session-*.log` once jailbreak filesystem access is
+available. Retrieve it over FTP after closing the browser, including when setup
+shows **STOPPED**. Logs redact credentials and retain up to 256 KiB per session.
+Checkpoints are saved between setup steps and after the final result or handled
+failure. A browser crash or interrupted write can leave only the previous
+checkpoint (and a `.part` file). A failure before filesystem access, or a storage
+error, cannot guarantee a console log; the page reports that limitation. Existing
+session logs are preserved.
+
 For the console menu references, see PlayStation's
 [network settings](https://www.playstation.com/en-us/support/connectivity/internet-connect-playstation/)
 and [User's Guide instructions](https://www.playstation.com/en-us/support/hardware/ps5-console-users-guide/).

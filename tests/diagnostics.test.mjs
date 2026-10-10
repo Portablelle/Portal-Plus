@@ -12,6 +12,7 @@ import { sendPayload } from '../vps-site/src/payload-sender.js';
 import { renderSessionResult } from '../vps-site/src/session-result.js';
 import { renderPostLaunch } from '../vps-site/src/post-launch.js';
 import { bindLaunchProgress, progressReporter } from '../vps-site/src/launch-progress.js';
+import { SessionLog, SessionLogIO } from '../vps-site/src/session-log.js';
 
 const firmwareSource = await readFile(new URL('../vps-site/src/firmware.js', import.meta.url), 'utf8');
 const siteSource = (await readFile(new URL('../vps-site/src/site.js', import.meta.url), 'utf8')).replace(/^import .*;\s*$/gm, '').replace('import("./relapse_exploit.js")', 'loadKernelModule()');
@@ -102,8 +103,9 @@ test('private native startup output is not copied into the browser log',async()=
   const error=Object.assign(diagnosticError('SERVICE_NOT_READY','unlabelled private credential'),{logMessage:'Native output remains in the private startup.log.'});
   const view=screen('PlayStation 5/13.00',()=>atStage('Botty+ manager installation / startup',()=>{throw error;}));
   await view.elements.get('launch').listeners.click();
-  assert.match(view.elements.get('console').lastElementChild.textContent,/private startup.log/);
-  assert.doesNotMatch(view.elements.get('console').lastElementChild.textContent,/credential/);
+  const log=view.elements.get('console').children.map(line=>line.textContent).join('\n');
+  assert.match(log,/private startup.log/);
+  assert.doesNotMatch(log,/credential/);
 });
 test('logs redact credentials while retaining technical context', () => {
   const line=safeLog('HTTP 401 https://user:private@host/path password="private" token=private Authorization: Bearer private');
@@ -161,7 +163,7 @@ function screen(agent, launch, overrides = {}) {
     requestAnimationFrame:callback=>callback(),setTimeout:callback=>callback(),
     bindLaunchOptions:()=>({lock:()=>({codex:true})}),launchSession:launch,
     cheatRunnerStatus,codexStatus,atStage,diagnosticError,failureStatus,safeLog,
-    renderSessionResult,renderPostLaunch,bindLaunchProgress,progressReporter,...overrides};
+    renderSessionResult,renderPostLaunch,bindLaunchProgress,progressReporter,SessionLog,SessionLogIO,...overrides};
   vm.runInNewContext(firmwareSource,context);
   vm.runInNewContext(siteSource,context);
   return {elements,document,context};
@@ -190,7 +192,7 @@ test('critical screen stops once, identifies stage and logs technical detail',as
   assert.equal(view.elements.get('launch').disabled,true);
   assert.equal(view.document.body.dataset.state,'error');
   assert.match(view.elements.get('status').textContent,/Kernel exploit failed/);
-  assert.match(view.elements.get('console').lastElementChild.textContent,/technical probe failed/);
+  assert.ok(view.elements.get('console').children.some(line=>/technical probe failed/.test(line.textContent)));
 });
 test('optional screen remains READY and presents both failed components without restarting',async()=>{
   const view=screen('PlayStation 5/13.00',({report})=>launchSession(options({
@@ -206,4 +208,23 @@ test('optional screen remains READY and presents both failed components without 
   assert.match(status,/CheatRunner is unavailable/);assert.match(status,/Codex PS5 is unavailable/);
   assert.doesNotMatch(status,/Restart|private|tile failure/);
   assert.doesNotMatch(view.elements.get('console').lastElementChild.textContent,/private/);
+});
+
+test('screen saves the final failure detail outside Botty storage before returning',async()=>{
+  const files=new Map();
+  const io={mkdirs:async()=>{},writeFile:async(path,bytes)=>files.set(path,new TextDecoder().decode(bytes))};
+  const view=screen('PlayStation 5/13.00',async({onIO,saveLog,report})=>{
+    await onIO({});
+    report('Starting Botty service');
+    await saveLog();
+    throw Object.assign(Error('Cannot access directory: /data/botty token=private'),{stage:'Botty+ manager installation / startup'});
+  },{SessionLogIO:class {constructor(){return io;}}});
+  await view.elements.get('launch').listeners.click();
+  assert.equal(files.size,1);
+  const [[path,log]]=files;
+  assert.match(path,/^\/data\/portal-plus\/logs\/session-.*\.log$/);
+  assert.match(log,/Starting Botty service/);
+  assert.match(log,/Botty\+ manager installation \/ startup.*Cannot access directory: \/data\/botty/);
+  assert.doesNotMatch(log,/private/);
+  assert.equal(view.document.body.dataset.state,'error');
 });
