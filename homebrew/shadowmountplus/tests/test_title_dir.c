@@ -24,6 +24,10 @@ static bool kstuff_loaded = true;
 static int lock_fail_at = -1;
 static size_t locked_count;
 static uintptr_t locked_pages[8];
+bool should_stop_requested(void) { return false; }
+bool sm_kstuff_remote_mprotect(pid_t pid, uintptr_t address, size_t size, int protection) {
+  (void)pid; (void)address; (void)size; (void)protection; return true;
+}
 bool sm_kstuff_is_loaded(void) { return kstuff_loaded; }
 bool sm_kstuff_remote_mlock(pid_t pid, uintptr_t address, size_t size) {
   assert(pid == 42 && size == 0x4000 && (address & 0x3fff) == 0);
@@ -83,7 +87,8 @@ bool sm_shellcore_remote_resolve(pid_t pid, sm_shellcore_remote_t *out) {
   return true;
 }
 bool sm_remote_process_attach(pid_t pid) {
-  assert(pid==42); attach_count++;
+  attach_count++;
+  if (pid != 42) return false;
   if(conflict_on_attach) memory[target]=0xcc;
   return !fail_attach;
 }
@@ -134,6 +139,19 @@ static void reset(bool installed) {
   memcpy(g_hooks.hooks[2].original,k_expected_function_prologue,4);
   memcpy(memory+target,g_hooks.hooks[2].original,16);
   if(installed) assert(patch_remote_jump(42,target,remote_bridge_symbol(sm_shellcore_bridge_install_all_hook),16));
+  g_hooks.enabled = true;
+  for (size_t i = 0; i < 2; ++i) {
+    shellcore_hook_record_t *record = &g_hooks.hooks[i];
+    record->target = i == 0 ? SM_SHELLCORE_TARGET_LAUNCH_APP
+                            : SM_SHELLCORE_TARGET_SANDBOX_READY;
+    record->original_size = i == 0 ? 16 : 5;
+    memset(record->original, 0x90, record->original_size);
+    uintptr_t address = g_hooks.remote.targets[record->target] = 6000 + i * 100;
+    uintptr_t destination = remote_bridge_symbol(k_hook_symbols[i]);
+    assert(i == 1 ? patch_remote_call(42, address, destination)
+                  : patch_remote_jump(42, address, destination,
+                                      record->original_size));
+  }
   write_count=0;
 }
 static bool install(void) {
@@ -148,12 +166,81 @@ static void *parallel_install(void *unused) {
   assert(sm_shellcore_install_title_dir("PPSA99998", "/data/test", &result));
   assert(result==0); return NULL;
 }
+static void reset_refresh(void) {
+  reset(false);
+  g_hooks.enabled = true;
+  for (size_t i = 0; i < 2; ++i) {
+    shellcore_hook_record_t *record = &g_hooks.hooks[i];
+    record->target = i == 0 ? SM_SHELLCORE_TARGET_LAUNCH_APP
+                            : SM_SHELLCORE_TARGET_SANDBOX_READY;
+    record->original_size = i == 0 ? 16 : 5;
+    memset(record->original, 0x90, record->original_size);
+    g_hooks.remote.targets[record->target] = 6000 + i * 100;
+  }
+  assert(populate_bridge(&g_hooks, g_hooks.expected_bridge));
+  memcpy(memory + g_hooks.bridge_address, g_hooks.expected_bridge,
+         g_hooks.bridge_size);
+  for (size_t i = 0; i < 3; ++i) {
+    const shellcore_hook_record_t *record = &g_hooks.hooks[i];
+    uintptr_t address = g_hooks.remote.targets[record->target];
+    uintptr_t destination = remote_bridge_symbol(k_hook_symbols[i]);
+    assert(i == 1 ? patch_remote_call(42, address, destination)
+                  : patch_remote_jump(42, address, destination,
+                                      record->original_size));
+  }
+  attach_count = write_count = 0;
+}
+
+static void test_upstream_refresh(void) {
+  reset_refresh();
+  assert(sm_shellcore_hooks_refresh());
+  assert(attach_count == 0 && write_count == 0);
+  // Each missing entry point is recovered, with the existing bridge retained.
+  for (size_t i = 0; i < 3; ++i) {
+    reset_refresh();
+    const shellcore_hook_record_t *record = &g_hooks.hooks[i];
+    memcpy(memory + g_hooks.remote.targets[record->target], record->original,
+           record->original_size);
+    assert(sm_shellcore_hooks_refresh());
+    assert(attach_count == 1 && write_count == 1 && hook_installed(42, i));
+    assert(install());
+  }
+  // Firmware before 12.00 has only the base bridge, without install slots.
+  reset_refresh();
+  g_hooks.hook_count = SHELLCORE_BASE_HOOK_COUNT;
+  g_hooks.bridge_size = sm_shellcore_bridge_base_end - sm_shellcore_bridge_blob_start;
+  assert(populate_bridge(&g_hooks, g_hooks.expected_bridge));
+  memcpy(memory + g_hooks.bridge_address, g_hooks.expected_bridge, g_hooks.bridge_size);
+  memcpy(memory + g_hooks.remote.targets[SM_SHELLCORE_TARGET_LAUNCH_APP],
+         g_hooks.hooks[0].original, g_hooks.hooks[0].original_size);
+  assert(sm_shellcore_hooks_refresh());
+  assert(attach_count == 1 && write_count == 1 && hook_installed(42, 0));
+  reset_refresh(); memory[target] = 0xcc;
+  assert(!sm_shellcore_hooks_refresh()); assert(write_count == 0);
+  reset_refresh(); memcpy(memory + target, g_hooks.hooks[2].original, 16);
+  memory[g_hooks.bridge_address + 100] ^= 1;
+  assert(!sm_shellcore_hooks_refresh()); assert(write_count == 0);
+  reset_refresh(); memcpy(memory + target, g_hooks.hooks[2].original, 16);
+  memory[remote_bridge_symbol(sm_shellcore_bridge_install_armed)] = 1;
+  assert(!sm_shellcore_hooks_refresh()); assert(write_count == 0);
+  reset_refresh(); memcpy(memory + target, g_hooks.hooks[2].original, 16);
+  wrong_image = 1;
+  assert(!sm_shellcore_hooks_refresh()); assert(write_count == 0);
+  reset_refresh(); memcpy(memory + target, g_hooks.hooks[2].original, 16);
+  fail_detach = 1;
+  assert(!sm_shellcore_hooks_refresh());
+  assert(g_hooks.status == SHELLCORE_HOOKS_ROLLBACK_PENDING);
+  assert(!install());
+}
+
 int main(void) {
   test_page_pinning();
+  test_upstream_refresh();
   reset(true); assert(install()); assert(attach_count==0 && dispatch_count==1);
   reset(true); read_failures=1; assert(install()); assert(attach_count==0);
-  reset(true); read_failures=2; assert(!install());
-  assert(g_hooks.status==SHELLCORE_HOOKS_READY && write_count==0);
+  reset(true); read_failures=8; assert(!install());
+  assert(g_hooks.status==SHELLCORE_HOOKS_STALE && write_count==0);
+  read_failures=0;
   assert(install()); // No permanent failure after a transient read error.
   reset(false); assert(install()); assert(attach_count==1 && dispatch_count==1);
   assert(g_hooks.status==SHELLCORE_HOOKS_READY);
@@ -162,7 +249,7 @@ int main(void) {
   reset(false); memory[remote_bridge_symbol(sm_shellcore_bridge_install_title_id_0)]=17;
   memory[remote_bridge_symbol(sm_shellcore_bridge_install_dir_0)]=99;
   assert(install()); // Previous request data is intentionally mutable.
-  reset(false); memory[target]=0xcc; assert(!install()); assert(write_count==0 && attach_count==0);
+  reset(false); memory[target]=0xcc; assert(!install()); assert(write_count==0 && attach_count==1);
   reset(false); memory[g_hooks.bridge_address]^=1; assert(!install()); assert(write_count==0);
   reset(false); memory[remote_bridge_symbol(sm_shellcore_bridge_install_armed)]=1;
   assert(!install()); assert(write_count==0);
@@ -181,6 +268,9 @@ int main(void) {
   assert(g_hooks.status==SHELLCORE_HOOKS_ROLLBACK_PENDING);
   assert(!install()); assert(dispatch_count==0);
   reset(false); current_pid=43; assert(!install()); assert(write_count==0);
+  assert(g_hooks.enabled && g_hooks.status==SHELLCORE_HOOKS_STALE);
+  assert(!sm_shellcore_hooks_refresh()); // Retry the new PID, never report disabled success.
+  current_pid=42; assert(install());
   reset(false); g_hooks.status=SHELLCORE_HOOKS_ROLLBACK_PENDING;
   assert(!install()); assert(write_count==0);
   reset(false); pthread_t workers[8];

@@ -15,9 +15,9 @@ build = root / 'build'
 if build.exists():
     raise SystemExit('Build directory already exists; use a fresh checkout or preserve it before preparing again')
 build.mkdir()
-with tarfile.open(root / 'vendor/shadowmountplus-d7e35e6.tar.gz') as archive:
+with tarfile.open(root / meta['sourceArchive']) as archive:
     archive.extractall(build, filter='data')
-for patch in ('title-dir-recovery.patch', 'kstuff-lite-no-legacy-control.patch', 'pin-shellcore-hooks.patch', 'botty-background-storage.patch'):
+for patch in ('shellcore-hooks.patch', 'botty-background-storage.patch', 'fakelib-readonly-cache.patch'):
     subprocess.run(['patch', '-p1', '--batch', '--fuzz=0', '-i',
                     str(root / 'patches' / patch)], cwd=build, check=True)
 print('Prepared ShadowMountPlus ' + meta['version'])

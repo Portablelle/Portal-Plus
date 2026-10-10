@@ -1,17 +1,18 @@
-# ShadowMountPlus 1.7beta4-botty.2 (development)
+# ShadowMountPlus 1.7beta5-fix1-botty.1 (development)
 
 Botty's narrow patch to ShadowMountPlus fixes a TitleDir bridge that remained
 unusable for the entire session after one failed hook check. This is a modified
 upstream payload, distinct from the Botty service and native title versions.
 
-On firmware 12.00+, registration now retries a failed hook read once and retains
-its state on read errors. When AppInstallAll has returned to its exact saved
-original bytes, registration suspends ShellCore, revalidates its image, targets,
-and the complete installed bridge (excluding inactive request data), then
-restores only the install jump and verifies it before dispatching the request.
-Unknown patches, changed bridge code, an armed request, and failed validation
-are refused. Partial writes roll back; unresolved rollback/detach failures block
-further dispatch. The daemon, downloads and extracted files are not restarted.
+On firmware 12.00+, resume and registration use upstream's shared hook recovery
+path. It retries hook checks, retains retryable state on read/attach errors and
+validates the image, targets and saved bridge bytes under process suspension
+before restoring missing launch, sandbox or install entry points. Request data
+may change while the disarmed flag and bridge code must match. Unknown patches,
+an armed request and failed validation are refused. Partial writes roll back;
+unresolved rollback/detach failures block further dispatch. A changed ShellCore
+PID stays eligible for upstream reinstallation. The daemon, downloads and
+extracted files are not restarted.
 
 This recovers the recognized missing-hook condition. The original console log
 combined unreadable memory and mismatching bytes into the same error, so it does
@@ -23,7 +24,8 @@ against every installation error. Existing game retry limits remain intact.
 
 The checked-in source archive and SDK import stub are hash-pinned in
 `provenance.json`. The upstream modifications are the reviewable patches
-in `patches/title-dir-recovery.patch` and `patches/kstuff-lite-no-legacy-control.patch`. The upstream GPL-3.0 license and SDK stub
+in `patches/shellcore-hooks.patch`, `patches/botty-background-storage.patch`
+and `patches/fakelib-readonly-cache.patch`. The upstream GPL-3.0 license and SDK stub
 license are retained.
 
 ```sh
@@ -98,7 +100,7 @@ installation. Duplicate pages are locked once per installation; locks remain
 for ShellCore's lifetime to protect any outstanding bridge return addresses.
 No legacy Kstuff enable/disable operation is used.
 
-`patches/pin-shellcore-hooks.patch` contains this change. Host tests cover page
+The page-pinning change is now in `patches/shellcore-hooks.patch`. Host tests cover page
 boundaries, shared pages, missing Kstuff and failures at every lock step.
 Console acceptance must verify the bytes remain installed and Botty+ starts.
 
@@ -173,3 +175,38 @@ double. These checks do not establish firmware acceptance. Before release, test
 folder and compressed moves/deletions with Botty open on disposable console
 fixtures, including launching another app, unplugging storage, and reconnecting.
 Do not restart a busy console or replace its running ShadowMount to activate it.
+
+## 1.7beta5-fix1 integration (2026-10-11)
+
+Upstream release `1.7-beta5fix1` is pinned at
+`98c524890176c7b474fcb03387bec88c4a559861`; the portal build is
+`1.7beta5-fix1-botty.1`. The three current patches apply with zero fuzz.
+
+This release adds default and per-game fakelib modes, filters libkernel out of
+fakelib overlays, tolerates absent backport cleanup files, exposes system fonts
+read-only, and corrects connected USB/extended/disc sandbox mounts. It also adds
+launch crash details, hook recovery after resume and before registration, game
+versions in the web library and the external-drive PS4 icon fix.
+
+Upstream removed legacy Kstuff auto-pause and delay tuning. Our former Lite
+control guard is therefore retired; the only Kstuff extension is the existing
+remote mlock syscall used to keep hook pages resident. Upstream requests current
+Kstuff and excludes EtaHEN; the portal retains its separately pinned Lite v1.11.
+Compatibility with that pinned payload still requires console acceptance.
+
+The ShellCore patch adds resident pages and saved-bridge validation to
+upstream’s shared recovery of launch, sandbox and install hooks. The storage patch retains
+`botty_background_storage_v1`, exact source preconditions, Botty title/mount
+exclusions, moved-image path rebasing and cross-volume copy safeguards. Upstream
+localized operation errors and missing-source handling remain available.
+The fakelib patch allows upstream’s filtered cache when cleanup is refused on a
+read-only source; unfiltered overlays remain refused if that cache is unavailable.
+
+Validation: 29 TitleDir registration calls plus eight concurrent calls passed,
+including recovery of each upstream hook, foreign-byte/cave/armed-request
+refusals and detach failure. The production storage policy, copy and image-rebase
+regressions and the pinned SDK 0.43 PS5 cross-build passed. All 295 portal Node
+tests and 70 Python tests passed. These checks do not establish console
+acceptance for this upstream version. Earlier
+hardware results in this document refer to older builds. Activate in a fresh,
+idle console session and keep the prior portal release for rollback.

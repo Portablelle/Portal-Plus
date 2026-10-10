@@ -64,7 +64,7 @@
  #include "sm_platform.h"
  
  #include <arpa/inet.h>
-@@ -621,6 +622,7 @@
+@@ -623,6 +624,7 @@
        !append_json_string(capabilities, "delete_game_source") ||
        !append_json_string(capabilities, "unpack_game_image") ||
        !append_json_string(capabilities, "storage_job_status") ||
@@ -72,7 +72,7 @@
        !append_json_string(capabilities, "storage_job_cancel") ||
        !append_json_string(capabilities, "list_manual_sources") ||
        !append_json_string(capabilities, "add_manual_source") ||
-@@ -2265,6 +2267,16 @@
+@@ -2416,6 +2418,16 @@
        !usb_storage_root_mounted(destination)) {
      return false;
    }
@@ -89,19 +89,22 @@
    for (int i = 0; i < get_scan_path_count(); ++i) {
      char scan_path[MAX_PATH];
      if (!get_scan_path(i, scan_path))
-@@ -2349,9 +2361,8 @@
-                                           const char *title_id,
-                                           size_t *affected_out) {
+@@ -2501,11 +2513,9 @@
+                                           size_t *affected_out,
+                                           const char **error_out) {
    *affected_out = 0;
--  if (runtime_sleep_mode_active() || sm_game_lifecycle_has_active_game() ||
--      sm_install_has_pending_work() ||
--      sm_shellcore_service_has_prepared_mount()) {
+-  *error_out = runtime_mutation_block_reason();
+-  if (*error_out)
+-    return EBUSY;
+-  if (sm_shellcore_service_has_prepared_mount()) {
+-    *error_out = "runtime_prepared";
 +  if (runtime_sleep_mode_active() || sm_install_has_pending_work() ||
 +      !sm_shellcore_storage_title_allowed(title_id)) {
++    *error_out = "runtime_busy";
      return EBUSY;
    }
  
-@@ -2361,6 +2372,36 @@
+@@ -2515,6 +2525,36 @@
      return ENOMEM;
  
    int status = 0;
@@ -138,7 +141,7 @@
    runtime_mount_state_lock();
    for (size_t i = 0; i < count; ++i) {
      game_source_info_t info;
-@@ -2395,34 +2436,51 @@
+@@ -2554,34 +2594,51 @@
        }
      }
    }
@@ -203,7 +206,7 @@
        }
        continue;
      }
-@@ -2432,11 +2490,19 @@
+@@ -2591,11 +2648,19 @@
                          sizeof(tracked_path)) &&
          strcmp(tracked_path, source) == 0 &&
          !write_mount_link(snapshot[i].title_id, destination)) {
@@ -223,7 +226,7 @@
  }
  
  static const char *storage_job_state_name(storage_job_state_t state) {
-@@ -2722,6 +2788,7 @@
+@@ -2907,6 +2972,7 @@
    } else {
      scanner_mutation = true;
    }
@@ -231,18 +234,18 @@
    if (status == 0 && operation == GAME_STORAGE_UNPACK) {
      const bool read_only = true;
      status = sm_shellcore_mount_title_runtime(title_id, &read_only);
-@@ -2731,7 +2798,9 @@
+@@ -2916,7 +2982,9 @@
      }
    }
    if (status == 0) {
--    if (!sm_shellcore_try_begin_external_mutation())
+-    if (!sm_shellcore_try_begin_external_mutation()) {
 +    if (!(operation == GAME_STORAGE_UNPACK
 +            ? sm_shellcore_try_begin_external_mutation()
-+            : sm_shellcore_try_begin_storage_mutation(title_id)))
++            : sm_shellcore_try_begin_storage_mutation(title_id))) {
        status = EBUSY;
-     else
-       shellcore_mutation = true;
-@@ -2804,6 +2873,18 @@
+       error = "runtime_busy";
+     } else
+@@ -2990,6 +3058,18 @@
      pthread_mutex_unlock(&g_storage_job.mutex);
    }
  
@@ -261,7 +264,7 @@
    if (status == 0) {
      bool renamed = false;
      const char *copy_source = operation == GAME_STORAGE_UNPACK
-@@ -2834,8 +2915,18 @@
+@@ -3019,8 +3099,18 @@
          g_storage_job.processed_files = total_files;
          pthread_mutex_unlock(&g_storage_job.mutex);
        }
@@ -282,29 +285,33 @@
      }
    }
  
-@@ -2884,7 +2975,7 @@
+@@ -3070,12 +3160,21 @@
  static int start_storage_job(const char *title_id,
                               const char *destination_dir,
                               game_storage_operation_t operation,
 -                             bool delete_source,
 +                             bool delete_source, const char *expected_source,
-                              storage_job_snapshot_t *accepted_out) {
-   sm_game_cache_snapshot_entry_t game_entry;
-   if (!find_game_snapshot_by_title(title_id, &game_entry))
-@@ -2895,6 +2986,9 @@
-       !path_exists(source_info.physical_path)) {
-     return ENOENT;
-   }
-+  if (expected_source && strcmp(expected_source, source_info.physical_path) != 0)
-+    return ESTALE;
+                              storage_job_snapshot_t *accepted_out,
+                              const char **error_out) {
 +  if (strcmp(title_id, "PPSA99071") == 0) return EPERM;
+   game_source_info_t source_info;
+   int status = resolve_storage_source(title_id, operation, &source_info,
+                                       error_out);
++  // A missing source still has a resolved path. Check the caller's precondition
++  // before allowing the handler to reconcile a missing-source deletion.
++  if (expected_source &&
++      (status == 0 || (*error_out && strcmp(*error_out, "source_missing") == 0)) &&
++      strcmp(expected_source, source_info.physical_path) != 0) {
++    *error_out = NULL;
++    return ESTALE;
++  }
+   if (status != 0)
+     return status;
    if (operation == GAME_STORAGE_UNPACK &&
-       (!source_info.image_backed || is_data_mounted(title_id) ||
-        sm_shellcore_service_title_is_prepared(title_id))) {
-@@ -3103,8 +3197,18 @@
- 
+@@ -3316,8 +3415,18 @@
    storage_job_snapshot_t accepted;
    memset(&accepted, 0, sizeof(accepted));
+   const char *error = NULL;
 +  struct json_object *expected_value = NULL;
 +  const char *expected_source = NULL;
 +  if (json_object_object_get_ex(request, "expected_source", &expected_value)) {
@@ -316,14 +323,14 @@
 +    }
 +  }
    int status = start_storage_job(title_id, destination_dir, operation,
--                                 delete_source, &accepted);
-+                                 delete_source, expected_source, &accepted);
+-                                 delete_source, &accepted, &error);
++                                 delete_source, expected_source, &accepted, &error);
    if (status != 0) {
-     log_debug("  [API] async game source %s start failed: title=%s "
-               "status=%d",
+     if (operation == GAME_STORAGE_DELETE && error &&
+         strcmp(error, "source_missing") == 0) {
 --- a/src/sm_game_lifecycle.c
 +++ b/src/sm_game_lifecycle.c
-@@ -1253,6 +1253,11 @@
+@@ -1241,6 +1241,11 @@
    close_game_lifecycle_wake_pipe();
  }
  
