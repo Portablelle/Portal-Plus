@@ -64,6 +64,14 @@ checkpoint (and a `.part` file). A failure before filesystem access, or a storag
 error, cannot guarantee a console log; the page reports that limitation. Existing
 session logs are preserved.
 
+Filesystem failures report the failed operation, numeric `errno` and its
+FreeBSD name when the worker's `__error` export can be resolved. If unavailable,
+the diagnostic explicitly says `errno=unavailable`. The portal records UID,
+effective UID and sandbox state at setup boundaries, preserving the initial
+state and any transitions. On failure this trace also appears in the main
+status, independently of the log panel and console-file saving. These checks
+do not change permissions or restart services.
+
 For the console menu references, see PlayStation's
 [network settings](https://www.playstation.com/en-us/support/connectivity/internet-connect-playstation/)
 and [User's Guide instructions](https://www.playstation.com/en-us/support/hardware/ps5-console-users-guide/).

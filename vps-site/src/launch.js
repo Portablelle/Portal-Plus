@@ -17,11 +17,13 @@ export async function launchSession(options) {
   const services = normalizeLaunchServices(options.services);
   const summary = createSessionResult(services);
   let step = 'jailbreak';
+  const inspectAccess = async label => { try { await options.inspectAccess?.(label); } catch {} };
   const checkpoint = async () => { try { await options.saveLog?.(); } catch {} };
   const runStep = async (...args) => {
+    await inspectAccess('before ' + args[0]);
     await checkpoint();
     try { return await launchStep(emit, ...args); }
-    finally { await checkpoint(); }
+    finally { await inspectAccess('after ' + args[0]); await checkpoint(); }
   };
   const record = (id, state, detail, extra = {}) => Object.assign(summary.components[id], { state, detail }, extra);
   try {
@@ -45,7 +47,11 @@ export async function launchSession(options) {
     const native = await runStep('native', () => atStage('Botty+ native installation', () => (options.native || installNative)(options.nativeIO || new NativeIO(runtime), { report, reuseNewer: true })), { enabled: services.botty });
     if (services.botty) record('native', 'ready', 'Installed app prepared or recognized and preserved. Home screen visibility is not confirmed.');
     step = 'kstuff';
-    await atStage('Required payloads', () => loadRequiredPayloads(runtime, { send: (runtime, name) => atStage(name, () => send(runtime, name)), wait, report, ppr: services.ppr, onProgress: emit,
+    await atStage('Required payloads', () => loadRequiredPayloads(runtime, { send: async (runtime, name) => {
+      await inspectAccess('before ' + name);
+      try { return await atStage(name, () => send(runtime, name)); }
+      finally { await inspectAccess('after ' + name); }
+    }, wait, report, ppr: services.ppr, onProgress: emit,
       beforePayload(name) { step = name === 'kstuff.elf' ? 'kstuff' : name === 'a53_ppr_install.elf' ? 'ppr' : 'shadowmount'; },
       confirmPpr: options.confirmPpr,
       confirmedPpr() { record('ppr', 'ready', 'Success notification confirmed by the user; no automatic startup check.'); },

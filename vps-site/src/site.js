@@ -4,6 +4,7 @@ import { installWindowP } from "./utils/mem.js";
 
 
 import { SessionLog, SessionLogIO } from './session-log.js';
+import { prepareFileDiagnostics, inspectFileAccess, formatAccess, accessTrace } from './file-diagnostics.js';
 import { renderSessionResult } from './session-result.js';
 import { renderPostLaunch } from './post-launch.js';
 import { atStage, diagnosticError, failureStatus, safeLog } from './diagnostics.js';
@@ -15,6 +16,7 @@ import { bindLaunchProgress, progressReporter } from './launch-progress.js';
 const output = document.getElementById("console");
 let launchStartedAt = null;
 let sessionLog = null;
+let diagnosticIO = null;
 
 function writeLog(message, type = "log", replace = false) {
   let marker = "*";
@@ -146,7 +148,18 @@ button.addEventListener("click", async () => {
     const result = await launchSession({
       jailbreak: async () => { await atStage('Firmware offsets loading', () => window.offsetsReady); return await run(); },
       report,
-      onIO: io => sessionLog.attach(new SessionLogIO(io.runtime)),
+      onIO: async io => {
+        diagnosticIO = io;
+        await prepareFileDiagnostics(io.runtime);
+        const access = await inspectFileAccess(io.runtime, 'Console I/O ready');
+        writeLog('Console access [Console I/O ready]: ' + formatAccess(access) + '; errno reader: ' + io.runtime.fileDiagnostics.errnoStatus, 'info');
+        return sessionLog.attach(new SessionLogIO(io.runtime));
+      },
+      inspectAccess: async label => {
+        if (!diagnosticIO) return;
+        const access = await inspectFileAccess(diagnosticIO.runtime, label);
+        if (access) writeLog('Console access [' + label + ']: ' + formatAccess(access), 'info');
+      },
       saveLog: () => sessionLog.flush(),
       services,
       onProgress: reportProgress,
@@ -180,11 +193,13 @@ button.addEventListener("click", async () => {
   } catch (error) {
     const detail = safeLog(`${error.stage || 'Session setup'} [${error.code || 'STEP_FAILED'}]: ${error.logMessage || error.message || String(error)}`);
     writeLog(detail, "error");
+    const access = safeLog(accessTrace(diagnosticIO?.runtime));
+    writeLog(access, 'error');
     // Save the original failure before any result panel can throw or the user
     // sees STOPPED and closes the browser.
     await sessionLog.flush();
     button.textContent = "STOPPED";
-    status.textContent = safeLog(failureStatus(error)) + ' ' + detail;
+    status.textContent = safeLog(failureStatus(error)) + ' ' + detail + ' ' + access;
     document.body.dataset.state = "error";
     if (error.sessionResult) renderResults(error.sessionResult);
   } finally {
@@ -197,7 +212,7 @@ button.addEventListener("click", async () => {
     renderLogSnapshot();
     await sessionLog.flush();
     // A final disk failure must also be visible outside the log panel.
-    if (sessionLog.error) status.textContent += ' Console log saving failed: ' + sessionLog.error;
+    if (sessionLog.error) status.textContent += ' Console log saving failed: ' + sessionLog.error + ' ' + safeLog(accessTrace(diagnosticIO?.runtime));
     reportProgress({ type: 'end', failed: document.body.dataset.state === 'error' });
     button.setAttribute("aria-busy", "false");
   }
