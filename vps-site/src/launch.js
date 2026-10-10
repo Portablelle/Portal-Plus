@@ -72,14 +72,6 @@ export async function launchSession(options) {
       record('ftp', 'ready', 'Listener confirmed on port 2121.');
     }), { enabled: services.ftp });
     if (!services.ftp) report('FTP startup skipped by launch options.');
-    step = 'rtorrent';
-    const rtorrent = await runStep('rtorrent', async () => {
-      report('Preparing rTorrent…');
-      const result = await atStage('rTorrent installation / startup', () => (options.rtorrent || installAndStart)(io, { report }));
-      record('rtorrent', 'ready', 'Listener confirmed on port 5001.');
-      return result;
-    }, { enabled: services.rtorrent || services.botty });
-    if (!services.rtorrent && !services.botty) report('rTorrent startup skipped by launch options.');
     let manager = { skipped: true };
     step = 'manager';
     if (services.botty) {
@@ -90,7 +82,7 @@ export async function launchSession(options) {
         : 'Service health confirmed on port 8088.');
     } else report('Botty+ installation and service startup skipped by launch options.');
     if (!services.botty) emit({ id: 'manager', state: 'skipped', detail: 'Not selected.' });
-    report('Core setup completed. Optional components are checked next; home screen visibility is not confirmed.');
+    report('Botty service preparation completed. Optional components are checked before rTorrent starts; home screen visibility is not confirmed.');
     step = 'cheatrunner';
     let cheatrunner = { ready: false, skipped: true, reason: 'CheatRunner startup skipped by launch options.' };
     if (services.cheatrunner) try {
@@ -112,6 +104,16 @@ export async function launchSession(options) {
     if (services.codex) report(codexStatus(codex));
     else emit({ id: 'codex', state: 'skipped', detail: 'Not selected.' });
     if (codex.diagnostic) report(safeLog('Codex PS5 installation / startup: ' + codex.reason), { logOnly: true });
+    // Restored torrents can exhaust the console's shared descriptor budget.
+    // Finish all installers and start their services before opening torrent files.
+    step = 'rtorrent';
+    const rtorrent = await runStep('rtorrent', async () => {
+      report('Preparing rTorrent…');
+      const result = await atStage('rTorrent installation / startup', () => (options.rtorrent || installAndStart)(io, { report }));
+      record('rtorrent', 'ready', 'Listener confirmed on port 5001.');
+      return result;
+    }, { enabled: services.rtorrent || services.botty });
+    if (!services.rtorrent && !services.botty) report('rTorrent startup skipped by launch options.');
     failed = false;
     return {native, rtorrent, manager, cheatrunner, codex, summary: finishSessionResult(summary)};
   } catch (error) {

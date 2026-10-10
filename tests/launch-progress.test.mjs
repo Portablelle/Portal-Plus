@@ -21,7 +21,7 @@ function fixture(overrides = {}) {
 test('structured transitions follow the actual interleaved execution order', async () => {
   const f = fixture();
   await launchSession(f.options);
-  assert.deepEqual(f.calls, ['jailbreak', 'native', 'kstuff.elf', 10000, 'a53_ppr_install.elf', 'confirmation', 'shadowmountplus.elf', 'rtorrent', 'manager', 'cheatrunner', 'codex']);
+  assert.deepEqual(f.calls, ['jailbreak', 'native', 'kstuff.elf', 10000, 'a53_ppr_install.elf', 'confirmation', 'shadowmountplus.elf', 'manager', 'cheatrunner', 'codex', 'rtorrent']);
   const steps = launchSteps(f.options.services);
   assert.deepEqual(f.events, [...steps.flatMap(step => [
     { id: step.id, state: step.id === 'ppr-confirm' ? 'waiting' : 'active', detail: f.events.find(event => event.id === step.id).detail },
@@ -35,7 +35,7 @@ for (const botty of [false, true]) test('unselected steps are skipped; Botty ret
   const f = fixture({ services: { botty, rtorrent: false, ftp: false, cheatrunner: false, codex: false, ppr: false } });
   await launchSession(f.options);
   const skipped = f.events.filter(event => event.state === 'skipped').map(event => event.id);
-  assert.deepEqual(skipped, [...(botty ? [] : ['native']), 'ppr', 'ppr-confirm', 'ftp', ...(botty ? [] : ['rtorrent', 'manager']), 'cheatrunner', 'codex']);
+  assert.deepEqual(skipped, [...(botty ? [] : ['native']), 'ppr', 'ppr-confirm', 'ftp', ...(botty ? [] : ['manager']), 'cheatrunner', 'codex', ...(botty ? [] : ['rtorrent'])]);
   for (const id of skipped) assert.equal(f.events.some(event => event.id === id && event.state === 'active'), false);
   assert.equal(f.calls.includes('rtorrent'), botty);
 });
