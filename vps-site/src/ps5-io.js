@@ -1,5 +1,6 @@
 // FreeBSD/PS5 syscall adapter. All writes stay inside Botty's private data tree.
 // The ROP runtime is serialized by the portal; it must never be used concurrently.
+import { readFileErrno, formatErrno, inspectFileAccess, formatAccess } from './file-diagnostics.js';
 const ROOT = '/data/botty';
 // Shared with package installers so a verified payload can reach the ELF loader.
 export const MAX_ELF_BYTES = 32 * 1024 * 1024;
@@ -28,7 +29,16 @@ export class PS5IO {
     this.processBuffer = null;
   }
   async call(name, ...args) {
-    return (await this.runtime.chain.syscall(SYS[name], ...args)).low | 0;
+    const result = (await this.runtime.chain.syscall(SYS[name], ...args)).low | 0;
+    // Read TLS errno immediately, before close, mkdir or a diagnostic syscall
+    // can overwrite it. All adapters share the same prepared worker pointer.
+    this.lastErrno = result < 0 ? readFileErrno(this.runtime) : null;
+    return result;
+  }
+  async fileError(message, operation) {
+    const errno = this.lastErrno;
+    const access = await inspectFileAccess(this.runtime, operation + ' failure');
+    return Object.assign(new Error(message + ' [' + operation + ' ' + formatErrno(errno) + ' ' + formatAccess(access) + ']'), { errno, operation });
   }
   string(text, ptr = this.pathBuffer) {
     const bytes = encoder.encode(text);
@@ -45,7 +55,7 @@ export class PS5IO {
       await this.call('mkdir', this.string(part), 0o700);
       // O_DIRECTORY | O_NOFOLLOW: reject files/symlinks as existing directories.
       const fd = await this.call('open', this.string(part), 0x20000 | 0x100, 0);
-      if (fd < 0) throw Error('Cannot access directory: ' + part);
+      if (fd < 0) throw await this.fileError('Cannot access directory: ' + part, 'open');
       await this.close(fd);
     }
   }
@@ -75,7 +85,7 @@ export class PS5IO {
       let sent = 0;
       while (sent < size) {
         const n = await this.call('write', fd, this.buffer.add32(sent), size - sent);
-        if (n <= 0 || n > size - sent) throw Error('Write interrupted (connection or disk space).');
+        if (n <= 0 || n > size - sent) throw await this.fileError('Write interrupted (connection or disk space).', 'write');
         sent += n;
       }
       offset += size;
@@ -86,13 +96,13 @@ export class PS5IO {
     const target = exclusive ? path : path + '.part';
     // O_WRONLY | O_CREAT | O_NOFOLLOW | (O_EXCL or O_TRUNC)
     const fd = await this.call('open', this.string(target), 1 | 0x200 | 0x100 | (exclusive ? 0x800 : 0x400), 0o600);
-    if (fd < 0) throw Error('Cannot create file (existing, permissions or disk space): ' + target);
+    if (fd < 0) throw await this.fileError('Cannot create file: ' + target, 'open');
     try {
       await this.writeAll(fd, bytes);
-      if (await this.call('fsync', fd) !== 0) throw Error('Could not flush file: ' + target);
+      if (await this.call('fsync', fd) !== 0) throw await this.fileError('Could not flush file: ' + target, 'fsync');
     } finally { await this.close(fd); }
     if (!exclusive && await this.call('rename', this.string(target), this.string(path, this.otherPath)) !== 0)
-      throw Error('Could not commit file: ' + path);
+      throw await this.fileError('Could not commit file: ' + path, 'rename');
   }
   async processes() {
     const mib = this.pathBuffer;
