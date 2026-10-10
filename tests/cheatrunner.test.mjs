@@ -133,7 +133,7 @@ test('CheatRunner error leaves successful Botty session ready and reports cause'
     native:async()=>({}),send:async()=>{},wait:async()=>{},rtorrent:async()=>{},manager:async()=>({version:'1.3.5'}),
     cheatrunner:async()=>{throw Error('tile failure');},report:message=>messages.push(message)});
   assert.equal(result.manager.version,'1.3.5'); assert.equal(result.cheatrunner.ready,false);
-  assert.match(messages.at(-1),/tile failure/);
+  assert.ok(messages.some(message => /tile failure/.test(message)));
 });
 
 test('corrupt config backup cannot replace the user config or launch a payload', async () => {

@@ -10,7 +10,7 @@ for (const running of [false, true]) test('one launch prepares all components; F
   await launchSession({ jailbreak: async () => { events.push('jailbreak'); return {}; }, io: { listening: async () => ftp }, nativeIO: {}, cheatRunnerIO: {}, cheatrunner: async () => { events.push('cheatrunner'); return {ready:true,tileRegistered:true}; },
     native: async () => events.push('native'), rtorrent: async () => events.push('rtorrent'), manager: async () => events.push('manager'),
     send: async (_, name) => { events.push(name); if (name === 'ftpsrv-ps5.elf') ftp = true; }, wait: async ms => events.push(ms) });
-  assert.deepEqual(events, ['jailbreak', 'native', 'kstuff.elf', 10000, 'shadowmountplus.elf', ...(running ? [] : ['ftpsrv-ps5.elf']), 'rtorrent', 'manager', 'cheatrunner']);
+  assert.deepEqual(events, ['jailbreak', 'native', 'kstuff.elf', 10000, 'shadowmountplus.elf', ...(running ? [] : ['ftpsrv-ps5.elf']), 'manager', 'cheatrunner', 'rtorrent']);
 });
 test('failed FTP startup stops without blind duplicate sends', async () => {
   const sent = [];
@@ -157,7 +157,7 @@ test('launch keeps a recognized newer title untouched and starts every service',
     rtorrent: async () => services.push('rtorrent'), manager: async () => services.push('manager'),
     send: async (_, name) => services.push(name), wait: async () => {}, report: message => reports.push(message) });
   assert.deepEqual(result.native, {version: '99.000.000', updated: false});
-  assert.deepEqual(services, ['kstuff.elf', 'shadowmountplus.elf', 'rtorrent', 'manager']);
+  assert.deepEqual(services, ['kstuff.elf', 'shadowmountplus.elf', 'manager', 'rtorrent']);
   assert.deepEqual(f.files, before); assert.deepEqual(f.writes, []); assert.deepEqual(f.events, []);
   assert.deepEqual(f.downloads, ['./apps/botty-native/manifest.json']);
   assert.ok(reports.some(message => /Keeping installed Botty\+ 99\.000\.000/.test(message)));
@@ -315,8 +315,8 @@ for (let mask = 0; mask < 8; mask++) test('launch honors optional service combin
     cheatrunner: async () => { events.push('cheatrunner'); return { ready: true }; },
     send: async (_, name) => { events.push(name); if (name === 'ftpsrv-ps5.elf') ftp = true; }, wait: async () => {} });
   assert.deepEqual(events, ['jailbreak', 'native', 'kstuff.elf', 'shadowmountplus.elf',
-    ...(services.ftp ? ['ftpsrv-ps5.elf'] : []), 'rtorrent', 'manager',
-    ...(services.cheatrunner ? ['cheatrunner'] : [])]);
+    ...(services.ftp ? ['ftpsrv-ps5.elf'] : []), 'manager',
+    ...(services.cheatrunner ? ['cheatrunner'] : []), 'rtorrent']);
   assert.equal(result.cheatrunner.ready, services.cheatrunner);
   if (!services.cheatrunner) assert.equal(result.cheatrunner.skipped, true);
 });
@@ -330,7 +330,7 @@ test('compatible opt-in launch installs PPR before mounts and service startup', 
   await launchSession({services:{ppr:true,ftp:false,rtorrent:false,cheatrunner:false},firmware:'11.20',
     jailbreak:async()=>({}),io:{},nativeIO:{},native:async()=>{},rtorrent:async()=>events.push('rtorrent'),manager:async()=>events.push('manager'),
     send:async(_,name)=>events.push(name),wait:async()=>{},confirmPpr:async()=>events.push('confirmed')});
-  assert.deepEqual(events,['kstuff.elf','a53_ppr_install.elf','confirmed','shadowmountplus.elf','rtorrent','manager']);
+  assert.deepEqual(events,['kstuff.elf','a53_ppr_install.elf','confirmed','shadowmountplus.elf','manager','rtorrent']);
 });
 
 for (const rtorrent of [false, true]) test('Botty opt-out leaves its title and services untouched; standalone rTorrent: ' + rtorrent, async () => {
@@ -341,4 +341,19 @@ for (const rtorrent of [false, true]) test('Botty opt-out leaves its title and s
     rtorrent:async()=>events.push('rtorrent'),send:async(_,name)=>events.push(name),wait:async()=>{} });
   assert.deepEqual(events,['kstuff.elf','shadowmountplus.elf',...(rtorrent?['rtorrent']:[])]);
   assert.equal(result.native.skipped,true);assert.equal(result.manager.skipped,true);
+});
+
+// A multifile session can use the shared descriptor budget as soon as it resumes.
+test('all service preparation finishes before rTorrent exhausts file opens', async () => {
+  let exhausted = false;
+  const prepare = async () => { assert.equal(exhausted, false, 'installer must retain file access'); return { ready: true }; };
+  const result = await launchSession({
+    services: { botty: true, rtorrent: true, ftp: true, cheatrunner: true, codex: true },
+    jailbreak: async () => ({}), io: { listening: async () => true }, nativeIO: {}, cheatRunnerIO: {}, codexIO: {},
+    send: prepare, wait: async () => {}, native: prepare, manager: prepare,
+    cheatrunner: prepare, codex: prepare,
+    rtorrent: async () => { exhausted = true; return { ready: true }; },
+  });
+  assert.equal(exhausted, true);
+  for (const id of ['manager', 'rtorrent', 'cheatrunner', 'codex']) assert.equal(result.summary.components[id].state, 'ready');
 });

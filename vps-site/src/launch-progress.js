@@ -14,10 +14,10 @@ export function launchSteps(selected) {
     ['ppr-confirm', 'A53 PPR confirmation', services.ppr],
     ['shadowmount', 'Send ShadowMountPlus', true],
     ['ftp', 'FTP', services.ftp],
-    ['rtorrent', 'rTorrent', services.rtorrent || services.botty],
     ['manager', 'Botty+ service', services.botty],
     ['cheatrunner', 'CheatRunner', services.cheatrunner],
     ['codex', 'Codex PS5', services.codex],
+    ['rtorrent', 'rTorrent', services.rtorrent || services.botty],
   ].map(([id, label, enabled]) => ({ id, label, state: enabled ? 'pending' : 'skipped', detail: enabled ? '' : 'Not selected.' }));
 }
 
