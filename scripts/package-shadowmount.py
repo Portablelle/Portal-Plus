@@ -24,17 +24,15 @@ shutil.copyfile(source / 'LICENSE', portal / 'shadowmountplus-LICENSE.txt')
     '# Modified ShadowMountPlus\n\nVersion: ' + meta['version'] + '\n\n'
     'Upstream: ' + meta['upstream'] + ', revision `' + meta['revision'] + '`.\n\n'
     'Botty modification: guarded automatic TitleDir hook recovery and transient '
-    'read handling; resident ShellCore hook pages; legacy Kstuff runtime toggles disabled for the bundled Lite implementation; guarded background storage operations while Botty+ is active, with progress and moved-image path rebasing. This is not the unmodified upstream release.\n\n'
+    'read handling; resident ShellCore hook pages; guarded background storage operations while Botty+ is active, with progress and moved-image path rebasing; filtered fakelib cache fallback for read-only sources. Upstream provides broader hook recovery and removes legacy Kstuff runtime toggles. This is not the unmodified upstream release.\n\n'
     'GPL-3.0 license: [license](shadowmountplus-LICENSE.txt). Complete pinned '
     'source, patch, build recipe, tests and SDK stub license: '
     '[corresponding source](shadowmountplus-source.tar.gz).\n')
 provenance = ROOT / 'payloads/versions.json'
 data = json.loads(provenance.read_text())
 entry = next(item for item in data['payloads'] if item['file'] == binary.name)
-entry.setdefault('upstream_version', entry['version'])
-entry.setdefault('upstream_digest', entry['digest'])
-entry.setdefault('upstream_url', entry.pop('url', None))
-entry.setdefault('upstream_published_at', entry.pop('published_at', None))
+for key, value in meta['upstreamRelease'].items():
+    entry['upstream_' + key] = value
 entry.update(version=meta['version'], digest='sha256:' + hashlib.sha256(binary.read_bytes()).hexdigest(),
              source='homebrew/shadowmountplus', source_revision=meta['revision'],
              corresponding_source='vps-site/payloads/shadowmountplus-source.tar.gz')
