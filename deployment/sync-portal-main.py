@@ -15,6 +15,7 @@ import sys
 import tarfile
 import tempfile
 import zlib
+import urllib.request
 
 
 @contextmanager
@@ -171,7 +172,7 @@ def reconcile_activation(state, root):
     current = root / 'current'
     if current_is_release(current, target):
         record = deployment_record(commit, target, previous)
-        record.update({k: pending[k] for k in ('portalCommit', 'bottyCommit', 'codexCommit') if k in pending})
+        record.update({k: pending[k] for k in ('portalCommit', 'bottyCommit', 'codexCommit', 'opennowRelease') if k in pending})
         write_json_atomically(state / 'last-deploy.json', record)
     pending_path.unlink()
 
@@ -191,7 +192,7 @@ def reconcile_deploy_record(state, commit, target):
         previous = existing['previous']
     expected = deployment_record(commit, target, previous)
     if existing:
-        expected.update({k: existing[k] for k in ('portalCommit', 'bottyCommit', 'codexCommit') if k in existing and existing.get('commit') == commit})
+        expected.update({k: existing[k] for k in ('portalCommit', 'bottyCommit', 'codexCommit', 'opennowRelease') if k in existing and existing.get('commit') == commit})
     if existing == expected:
         return
     write_json_atomically(record_path, expected)
@@ -206,7 +207,70 @@ def codex_remote_head(repository):
     return head
 
 
-def sync_main(repository, state, root, botty_repository=None, codex_repository=None):
+def opennow_release(repository):
+    if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9-]*/[A-Za-z0-9][A-Za-z0-9_.-]*', repository):
+        raise RuntimeError('Invalid OpenNOW repository')
+    request = urllib.request.Request('https://api.github.com/repos/' + repository + '/releases/latest',
+                                     headers={'Accept': 'application/vnd.github+json', 'User-Agent': 'Portal-Plus'})
+    if os.environ.get('GITHUB_TOKEN'):
+        request.add_header('Authorization', 'Bearer ' + os.environ['GITHUB_TOKEN'])
+    with urllib.request.urlopen(request, timeout=60) as response:
+        raw = response.read(1024 * 1024 + 1)
+    if len(raw) > 1024 * 1024:
+        raise RuntimeError('OpenNOW release metadata exceeds limit')
+    release = json.loads(raw)
+    tag = release.get('tag_name')
+    if (not isinstance(tag, str) or not re.fullmatch(r'[0-9]+\.[0-9]+\.[0-9]+', tag) or
+            release.get('draft') is not False or release.get('prerelease') is not False):
+        raise RuntimeError('Invalid OpenNOW stable release')
+    expected = {f'OpenNOW-PS5-{tag}.zip': 256 * 1024 * 1024,
+                f'OpenNOW-PS5-{tag}.manifest.json': 256 * 1024, 'SHA256SUMS': 16384}
+    assets = {}
+    for asset in release.get('assets', []):
+        name = asset.get('name')
+        if name not in expected:
+            continue
+        size = asset.get('size')
+        if name in assets or type(size) is not int or not 0 < size <= expected[name]:
+            raise RuntimeError('Invalid or oversized OpenNOW release asset')
+        assets[name] = size
+    if set(assets) != set(expected):
+        raise RuntimeError('Missing OpenNOW release assets')
+    return tag, assets
+
+
+def opennow_release_or_pinned(repository, pinned):
+    try:
+        return opennow_release(repository)
+    except Exception:
+        print('OpenNOW release lookup unavailable; keeping the pinned release.', file=sys.stderr)
+        return pinned, None
+
+
+def preserve_opennow(portal, current):
+    """Reuse the active public package when release discovery is unavailable."""
+    command([sys.executable, str(portal.parent / 'scripts/compose-opennow.py'),
+             '--root', str(portal), '--package', str(current / 'apps/opennow')])
+
+
+def download_opennow(repository, tag, assets, destination):
+    if shutil.disk_usage(destination).free < sum(assets.values()) + 512 * 1024 * 1024:
+        raise RuntimeError('Insufficient free space for OpenNOW staging')
+    for name, size in assets.items():
+        # Construct the public URL instead of trusting API-provided redirect URLs.
+        url = f'https://github.com/{repository}/releases/download/{tag}/{name}'
+        with urllib.request.urlopen(url, timeout=120) as response, (destination / name).open('xb') as stream:
+            total = 0
+            while block := response.read(min(1048576, size - total + 1)):
+                total += len(block)
+                if total > size:
+                    raise RuntimeError('OpenNOW release asset size changed during download')
+                stream.write(block)
+        if total != size:
+            raise RuntimeError('OpenNOW release asset size changed during download')
+
+
+def sync_main(repository, state, root, botty_repository=None, codex_repository=None, opennow_repository=None):
     state.mkdir(parents=True, exist_ok=True)
     root.mkdir(parents=True, exist_ok=True)
     releases = root / 'releases'
@@ -220,9 +284,15 @@ def sync_main(repository, state, root, botty_repository=None, codex_repository=N
         portal_head = remote_head(repository)
         botty_head = remote_head(botty_repository) if botty_repository else None
         codex_head = codex_remote_head(codex_repository) if codex_repository else None
-        head = (hashlib.sha256((portal_head + (botty_head or '') + (codex_head or '')).encode()).hexdigest()[:40]
-                if botty_head or codex_head else portal_head)
         current = root / 'current'
+        record = read_deploy_record(state / 'last-deploy.json')
+        pinned = record.get('opennowRelease') if record else None
+        if not pinned and (current / 'manifest.json').is_file():
+            pinned = json.loads((current / 'manifest.json').read_text()).get('opennowRelease')
+        opennow_tag, opennow_assets = opennow_release_or_pinned(opennow_repository, pinned) if opennow_repository else (None, None)
+        head = (hashlib.sha256((portal_head + (botty_head or '') + (codex_head or '') +
+                               (opennow_repository + ':' + opennow_tag if opennow_tag else '')).encode()).hexdigest()[:40]
+                if botty_head or codex_head or opennow_tag else portal_head)
         target = releases / ('main-' + head)
         if current_is_release(current, target):
             reconcile_deploy_record(state, head, target)
@@ -286,6 +356,18 @@ def sync_main(repository, state, root, botty_repository=None, codex_repository=N
                 command([sys.executable, str(source / 'scripts/compose-codex.py'),
                          '--root', str(source / 'vps-site'), '--codex', str(delivery / 'package'),
                          '--commit', codex_head])
+            if opennow_tag and opennow_assets is None:
+                preserve_opennow(source / 'vps-site', current.resolve())
+            elif opennow_tag:
+                delivery = source / 'opennow'
+                delivery.mkdir()
+                download_opennow(opennow_repository, opennow_tag, opennow_assets, delivery)
+                command([sys.executable, str(source / 'scripts/compose-opennow.py'),
+                         '--root', str(source / 'vps-site'),
+                         '--zip', str(delivery / f'OpenNOW-PS5-{opennow_tag}.zip'),
+                         '--manifest', str(delivery / f'OpenNOW-PS5-{opennow_tag}.manifest.json'),
+                         '--sums', str(delivery / 'SHA256SUMS'), '--tag', opennow_tag,
+                         '--repository', opennow_repository])
             validator = source / 'scripts/portal-manifest.py'
             portal = source / 'vps-site'
             manifest_path = portal / 'manifest.json'
@@ -304,7 +386,8 @@ def sync_main(repository, state, root, botty_repository=None, codex_repository=N
                 # A newer main commit must never be overwritten by a slow export.
                 if (remote_head(repository) != portal_head or
                         botty_head and remote_head(botty_repository) != botty_head or
-                        codex_head and codex_remote_head(codex_repository) != codex_head):
+                        codex_head and codex_remote_head(codex_repository) != codex_head or
+                        opennow_tag and opennow_release_or_pinned(opennow_repository, opennow_tag)[0] != opennow_tag):
                     return 'superseded'
                 if target.exists() or target.is_symlink():
                     if not target.is_dir() or target.is_symlink():
@@ -317,6 +400,8 @@ def sync_main(repository, state, root, botty_repository=None, codex_repository=N
                     pending.update(portalCommit=portal_head, bottyCommit=botty_head)
                 if codex_head:
                     pending.update(portalCommit=portal_head, codexCommit=codex_head)
+                if opennow_tag:
+                    pending.update(portalCommit=portal_head, opennowRelease=opennow_tag)
                 write_json_atomically(state / 'activation-pending.json', pending)
                 next_link = root / '.current.next'
                 if next_link.is_symlink():
@@ -343,12 +428,14 @@ def main():
         'BOTTY_APP_REPOSITORY', 'https://github.com/Portablelle/Botty-Plus.git'))
     parser.add_argument('--codex-repository', default=os.environ.get(
         'CODEX_APP_REPOSITORY', 'Portablelle/Codex-PS5'))
+    parser.add_argument('--opennow-repository', default=os.environ.get(
+        'OPENNOW_APP_REPOSITORY', 'OpenCloudGaming/OpenNOW-PS5'))
     parser.add_argument('--state', type=Path, default=Path('/var/lib/botty-portal/split'))
     parser.add_argument('--root', type=Path, default=Path('/var/www/botty-ps5'))
     args = parser.parse_args()
     try:
-        print(sync_main(args.repository, args.state.resolve(), args.root.resolve(), args.botty_repository, args.codex_repository))
-    except (OSError, RuntimeError, subprocess.SubprocessError, tarfile.TarError, EOFError, zlib.error) as error:
+        print(sync_main(args.repository, args.state.resolve(), args.root.resolve(), args.botty_repository, args.codex_repository, args.opennow_repository))
+    except (OSError, RuntimeError, ValueError, subprocess.SubprocessError, tarfile.TarError, EOFError, zlib.error) as error:
         print('Portal deployment failed: ' + str(error), file=sys.stderr)
         if isinstance(error, subprocess.CalledProcessError):
             print((error.stderr or error.stdout or '').strip()[-2000:], file=sys.stderr)

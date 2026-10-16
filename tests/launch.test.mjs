@@ -215,6 +215,23 @@ test('lost completion checkpoint converges without a second replacement', async 
   f.io.writeJournal=write;f.events.length=0;await installNative(f.io,f.options);
   assert.equal(decode(f.files.get(journalPath)).status,'complete');assert.deepEqual(f.events,[]);
 });
+test('shared recovery keeps Botty uncertain live files and its backup untouched', async () => {
+  const f = nativeFixture(); await f.previous();
+  const publish = f.io.publishNative;
+  f.io.publishNative = async () => {
+    await publish();
+    f.files.set(NATIVE_ROOT + '/eboot.bin', new Uint8Array([9]));
+    throw Error('power loss');
+  };
+  await assert.rejects(installNative(f.io, f.options), /restart to recover/);
+  const journal = decode(f.files.get(journalPath)), before = new Map(f.files);
+  assert.equal(journal.status, 'pending');
+  assert.deepEqual(f.files.get(journal.backup + '/eboot.bin'), new Uint8Array([1,2,3]));
+  f.events.length = 0;
+  await assert.rejects(installNative(f.io, f.options), /unexpected title files/);
+  assert.deepEqual(f.files, before);
+  assert.deepEqual(f.events, []);
+});
 test('malformed or escaping recovery journal cannot move any title', async () => {
   const f=nativeFixture();await f.previous();f.files.set(journalPath,encode({schema:1,status:'pending',target:nativeHash,previous:nativeHash,backup:'/data/homebrew/OTHER'}));
   await assert.rejects(installNative(f.io,f.options),/journal is damaged/);assert.deepEqual(f.events,[]);assert.equal(f.writes.length,0);

@@ -14,6 +14,7 @@ PAYLOAD_NOTICES = ('shadowmountplus-source.tar.gz', 'shadowmountplus-LICENSE.txt
                    'shadowmountplus-NOTICE.md', 'ppr-patch-source.tar.gz',
                    'ppr-patch-LICENSE.txt', 'ppr-patch-NOTICE.md')
 PACKAGE_NOTICES = {
+    'opennow': ('NOTICE.md', 'LICENSE', 'licenses/libsrtp.txt', 'licenses/usrsctp.txt'),
     'codex': ('NOTICE.md', 'LICENSE', 'codex-source.tar.gz'),
     'cheatrunner': ('NOTICE.md', 'LICENSE', 'cheatrunner-source.tar.gz'),
     'rtorrent': ('README.md', 'LICENSE', 'rtorrent-source.tar.gz'),
@@ -94,6 +95,7 @@ def rtorrent_version_pin(code):
 
 def verify_packages(root):
     for package, installer, constant in (
+        ('opennow', 'opennow.js', 'HASH'),
         ('codex', 'codex-install.js', 'HASH'),
         ('cheatrunner', 'cheatrunner.js', 'HASH'),
         ('botty', 'botty-manager.js', 'HASH'),
