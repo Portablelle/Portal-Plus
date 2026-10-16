@@ -16,6 +16,7 @@ const journal = '/data/botty/opennow/update.json';
 function fixture() {
   const disk = new Map(), directories = new Set(), events = [], downloads = [];
   const m = JSON.parse(readFileSync(new URL('../vps-site/apps/opennow/manifest.json', import.meta.url)));
+  m.files.push({path:'opennow-tile-installer.elf'}, {path:'sce_module/extra.prx'});
   const contents = new Map(m.files.map(f => [f.path, encode(f.path)]));
   contents.set('sce_sys/param.json', encode({titleId:'PPSA99082', contentId:'UP9000-PPSA99082_00-OPENNOWPS5000001', contentVersion:m.version}));
   for (const f of m.files) { const bytes = contents.get(f.path); f.size = bytes.length; f.sha256 = hash(bytes); }
@@ -65,11 +66,32 @@ test('OpenNOW requires explicit opt-in and checked-in package is pinned', () => 
   assert.equal(hash(raw), pin);
   assert.equal(validatePackage(JSON.parse(raw)).consoleTested, false);
 });
+test('extra manifest files retain path, hash, size and required-file validation', () => {
+  const {m} = fixture();
+  assert.equal(validatePackage(m), m);
+  for (const path of ['/extra.elf', '../extra.elf', 'sce_module/../extra.elf', './extra.elf', 'extra\\file', 'extra//file']) {
+    const bad = structuredClone(m);
+    bad.files.find(f => f.path === 'opennow-tile-installer.elf').path = path;
+    assert.throws(() => validatePackage(bad), /Unexpected OpenNOW package/);
+  }
+  for (const change of [f => { f.sha256 = '0'; }, f => { f.size = 64 * 1024 * 1024 + 1; }]) {
+    const bad = structuredClone(m);
+    change(bad.files.find(f => f.path === 'opennow-tile-installer.elf'));
+    assert.throws(() => validatePackage(bad), /Unexpected OpenNOW package/);
+  }
+  assert.throws(() => validatePackage({...m, files:m.files.filter(f => f.path !== 'eboot.bin')}), /Unexpected OpenNOW package/);
+});
 test('install verifies files; subsequent session only reads and reports untested prototype', async () => {
   const f = fixture();
   const result = await installOpenNow(f.io, f.options);
   assert.equal(result.updated,true); assert.match(result.reason,/Untested prototype/);
   assert.ok(f.disk.has(NATIVE_ROOT + '/eboot.bin'));
+  for (const file of f.m.files) {
+    assert.ok(f.downloads.includes('./apps/opennow/' + file.path));
+    const bytes = f.disk.get(NATIVE_ROOT + '/' + file.path);
+    assert.equal(bytes.length, file.size);
+    assert.equal(hash(bytes), file.sha256);
+  }
   f.events.length = f.downloads.length = 0;
   assert.equal((await installOpenNow(f.io,f.options)).updated,false);
   assert.deepEqual(f.events,[]);
@@ -296,14 +318,14 @@ test('manifest corruption, running apps, changed titles and newer copies are pre
   }
 });
 test('bad download or disk corruption never publishes', async () => {
-  for (const mode of ['download','disk']) {
+  for (const mode of ['download','disk']) for (const name of ['eboot.bin', 'opennow-tile-installer.elf']) {
     const f = fixture();
     if(mode === 'download') {
       const fetch = f.options.fetchFile;
-      f.options.fetchFile = async url => url.endsWith('eboot.bin') ? {ok:true,arrayBuffer:async()=>encode('corrupt')} : fetch(url);
+      f.options.fetchFile = async url => url.endsWith(name) ? {ok:true,arrayBuffer:async()=>encode('corrupt')} : fetch(url);
     } else {
       const write = f.io.writeFile;
-      f.io.writeFile = async (path,data) => write(path, path.endsWith('eboot.bin') ? encode('corrupt') : data);
+      f.io.writeFile = async (path,data) => write(path, path.endsWith(name) ? encode('corrupt') : data);
     }
     await assert.rejects(installOpenNow(f.io,f.options),/verification failed/);
     assert.ok(!f.disk.has(NATIVE_ROOT + '/eboot.bin'));
