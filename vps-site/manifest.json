@@ -544,7 +544,7 @@
     "src/launch.js": "e967318ca0e037ba3c516d1b9ebcd25c57f236e6ae7d7bc3660b4416397ec20a",
     "src/main.js": "d6c4520c3b3cfedf08accff38a27a7d90cec00965de89b3f84f604b97736a2a5",
     "src/native-title-io.js": "79012ce44ba374a5d1c47b560e613c76d3586a324d19fe7054d4aff5ec3d2b8c",
-    "src/opennow.js": "79ced95270bbb1a99e84a4aeac63468642b792dbcfe0be66d6124c10b985b83c",
+    "src/opennow.js": "3612d74c74aa59062622f42cc5bfbd6b2142110eb990dd9d231840cb6bf6b1cc",
     "src/payload-sender.js": "dd0a781951a5e6e5c83380371ce80d511153ba5e18c82e907d3e76cb1fd689f2",
     "src/post-launch.js": "22eb02e195a1e732973e0303a03a9e4c3b28ecfc4c3c35e08ce585927f1f41cd",
     "src/ps5-io.js": "df649ec13767d57e301d179ecd1a0b87a07296afa045e9485d55df322a88a2a5",

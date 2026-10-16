@@ -14,7 +14,7 @@ const pin = /const HASH = '([a-f0-9]{64})'/.exec(readFileSync(new URL('../vps-si
 const stage = '/data/botty/opennow/' + pin + '/PPSA99082';
 const journal = '/data/botty/opennow/update.json';
 function fixture() {
-  const disk = new Map(), events = [], downloads = [];
+  const disk = new Map(), directories = new Set(), events = [], downloads = [];
   const m = JSON.parse(readFileSync(new URL('../vps-site/apps/opennow/manifest.json', import.meta.url)));
   const contents = new Map(m.files.map(f => [f.path, encode(f.path)]));
   contents.set('sce_sys/param.json', encode({titleId:'PPSA99082', contentId:'UP9000-PPSA99082_00-OPENNOWPS5000001', contentVersion:m.version}));
@@ -23,17 +23,25 @@ function fixture() {
   const move = (source, target) => {
     assert.ok([...disk.keys()].some(p => p.startsWith(source + '/')));
     assert.ok(![...disk.keys()].some(p => p.startsWith(target + '/')));
+    assert.ok(!directories.has(target));
     events.push(['move', source, target]);
     for (const [p,b] of [...disk]) if (p.startsWith(source + '/')) { disk.set(target + p.slice(source.length), b); disk.delete(p); }
   };
   const io = {
-    readFile: async p => disk.get(p),
+    readFile: async (p, limit = 2 * 1024 * 1024) => {
+      const bytes = disk.get(p);
+      if (bytes && bytes.length > limit) throw Error('File exceeds expected size: ' + p);
+      return bytes;
+    },
     writeFile: async (p,b) => { events.push(['write', p]); disk.set(p,b); },
     mkdirs: async () => {}, syncDirectory: async () => {},
-    exists: async root => [...disk.keys()].some(p => p.startsWith(root + '/')),
+    exists: async root => directories.has(root) || [...disk.keys()].some(p => p.startsWith(root + '/')),
     assertNativeStopped: async () => events.push(['check']),
     preparePermissions: async () => {}, moveDirectory: async (...args) => move(...args),
-    removeEmptyNative: async () => false,
+    removeEmptyDirectory: async root => {
+      if ([...disk.keys(), ...directories].some(p => p.startsWith(root + '/'))) return false;
+      return directories.delete(root);
+    },
     publish: async () => move(stage, NATIVE_ROOT),
   };
   const options = {
@@ -47,7 +55,7 @@ function fixture() {
     disk.set(NATIVE_ROOT + '/sce_sys/param.json', encode(param));
     disk.set(NATIVE_ROOT + '/eboot.bin', encode('old'));
   };
-  return {disk, events, downloads, io, options, previous, m, raw};
+  return {disk, directories, events, downloads, io, options, previous, m, raw};
 }
 
 test('OpenNOW requires explicit opt-in and checked-in package is pinned', () => {
@@ -94,7 +102,7 @@ test('pending empty backup reservation is cleared and the unchanged original per
   let reserved = true;
   const exists = f.io.exists, write = f.io.writeFile, statuses = [];
   f.io.exists = async path => (path === backup && reserved) || await exists(path);
-  f.io.removeEmptyBackup = async path => {
+  f.io.removeEmptyDirectory = async path => {
     assert.equal(path, backup);
     assert.equal(await exists(path), false);
     assert.equal(decode(f.disk.get(NATIVE_ROOT + '/eboot.bin')), 'old');
@@ -185,6 +193,70 @@ test('rollback resumes after the failed publication was moved aside', async () =
   f.io.moveDirectory = move; f.io.publish = publish;
   await installOpenNow(f.io, f.options);
   assert.equal(decode(f.disk.get(journal)).status, 'complete');
+});
+test('rollback clears an empty failed-tree reservation and preserves occupied destinations', async () => {
+  for (const occupied of [false, true]) {
+    const f = fixture(); f.previous();
+    await installOpenNow(f.io, f.options);
+    const j = decode(f.disk.get(journal));
+    const failed = j.backup.slice(0, j.backup.lastIndexOf('/')) + '/failed-PPSA99082';
+    f.disk.set(journal, encode({...j, status:'pending'}));
+    f.disk.set(NATIVE_ROOT + '/eboot.bin', encode('corrupt'));
+    f.directories.add(failed);
+    if (occupied) f.disk.set(failed + '/eboot.bin', encode('retained'));
+    const fetch = f.options.fetchFile;
+    f.options.fetchFile = async () => { throw Error('offline'); };
+    if (occupied) {
+      await assert.rejects(installOpenNow(f.io, f.options));
+      assert.equal(decode(f.disk.get(journal)).status, 'pending');
+      assert.equal(decode(f.disk.get(failed + '/eboot.bin')), 'retained');
+      assert.equal(decode(f.disk.get(j.backup + '/eboot.bin')), 'old');
+      assert.equal(decode(f.disk.get(NATIVE_ROOT + '/eboot.bin')), 'corrupt');
+    } else {
+      await assert.rejects(installOpenNow(f.io, f.options), /offline/);
+      assert.equal(f.directories.has(failed), false);
+      assert.equal(decode(f.disk.get(journal)).status, 'rolled-back');
+      assert.equal(decode(f.disk.get(failed + '/eboot.bin')), 'corrupt');
+      assert.equal(decode(f.disk.get(NATIVE_ROOT + '/eboot.bin')), 'old');
+      f.options.fetchFile = fetch;
+      assert.equal((await installOpenNow(f.io, f.options)).updated, true);
+    }
+  }
+});
+test('oversized published files are mismatches and the retained backup is restored', async () => {
+  for (const path of ['eboot.bin', 'sce_sys/param.json']) {
+    const f = fixture(); f.previous();
+    await installOpenNow(f.io, f.options);
+    const j = decode(f.disk.get(journal));
+    f.disk.set(journal, encode({...j, status:'pending'}));
+    const bytes = new Uint8Array(64 * 1024 * 1024 + 1);
+    f.disk.set(NATIVE_ROOT + '/' + path, bytes);
+    await assert.rejects(f.io.readFile(NATIVE_ROOT + '/' + path, 64 * 1024 * 1024), /File exceeds expected size/);
+    f.options.fetchFile = async () => { throw Error('offline'); };
+    await assert.rejects(installOpenNow(f.io, f.options), /offline/);
+    assert.equal(decode(f.disk.get(journal)).status, 'rolled-back');
+    assert.equal(decode(f.disk.get(NATIVE_ROOT + '/eboot.bin')), 'old');
+    const failed = j.backup.slice(0, j.backup.lastIndexOf('/')) + '/failed-PPSA99082';
+    assert.equal(f.disk.get(failed + '/' + path), bytes);
+  }
+});
+test('pending local backup is restored before a remote manifest failure', async () => {
+  for (const mode of ['offline', 'unavailable', 'corrupt']) {
+    const f = fixture(); f.previous();
+    await installOpenNow(f.io, f.options);
+    const j = decode(f.disk.get(journal));
+    f.disk.set(journal, encode({...j, status:'pending'}));
+    for (const path of [...f.disk.keys()]) if (path.startsWith(NATIVE_ROOT + '/')) f.disk.delete(path);
+    f.options.fetchFile = async () => {
+      assert.equal(decode(f.disk.get(journal)).status, 'rolled-back');
+      assert.equal(decode(f.disk.get(NATIVE_ROOT + '/eboot.bin')), 'old');
+      if (mode === 'offline') throw Error('offline');
+      return {ok:mode !== 'unavailable', arrayBuffer:async () => encode('corrupt')};
+    };
+    await assert.rejects(installOpenNow(f.io, f.options), /offline|manifest unavailable|manifest verification failed/);
+    assert.equal(decode(f.disk.get(journal)).status, 'rolled-back');
+    assert.equal(decode(f.disk.get(NATIVE_ROOT + '/eboot.bin')), 'old');
+  }
 });
 test('failed first publication is moved aside and permits retry', async () => {
   const f = fixture(), publish = f.io.publish;

@@ -28,10 +28,7 @@ export class OpenNowIO extends NativeTitleIO {
     if (fd < 0) return false;
     await this.close(fd); return true;
   }
-  async removeEmptyNative() {
-    return ((await this.runtime.chain.syscall(137, this.string(NATIVE_ROOT))).low | 0) === 0;
-  }
-  async removeEmptyBackup(path) {
+  async removeEmptyDirectory(path) {
     this.checkedPath(path + '/check');
     return ((await this.runtime.chain.syscall(137, this.string(path))).low | 0) === 0;
   }
@@ -81,7 +78,12 @@ function identity(bytes, version) {
 }
 async function matches(io, root, manifest, digest) {
   for (const f of manifest.files) {
-    const data = await io.readFile(root + '/' + f.path, MAX_FILE);
+    let data;
+    try { data = await io.readFile(root + '/' + f.path, MAX_FILE); }
+    catch (error) {
+      if (error.message === 'File exceeds expected size: ' + root + '/' + f.path) return false;
+      throw error;
+    }
     if (!data || data.length !== f.size || await digest(data) !== f.sha256) return false;
   }
   return true;
@@ -101,22 +103,23 @@ async function recover(io, journal, manifest, digest) {
   if (target && await matches(io, NATIVE_ROOT, target, digest)) {
     await save(io, {...journal, status: 'complete'}); return;
   }
-  const current = await io.readFile(NATIVE_ROOT + '/sce_sys/param.json', 16384);
   const saved = await io.readFile(journal.backup + '/sce_sys/param.json', 16384);
   if (journal.previous && !saved) {
+    const current = await io.readFile(NATIVE_ROOT + '/sce_sys/param.json', 16384);
     // The unchanged original may still have an empty backup reservation.
     if (current && await digest(current) === journal.previous &&
-        (!await io.exists(journal.backup) || await io.removeEmptyBackup(journal.backup))) {
+        (!await io.exists(journal.backup) || await io.removeEmptyDirectory(journal.backup))) {
       await save(io, {...journal, status: 'rolled-back'}); return;
     }
     throw Error('OpenNOW recovery backup unavailable.');
   }
   if (journal.previous && await digest(saved) !== journal.previous)
     throw Error('OpenNOW recovery backup unavailable.');
-  await io.removeEmptyNative(); // Only an empty interrupted rename reservation.
+  await io.removeEmptyDirectory(NATIVE_ROOT); // Only an empty interrupted rename reservation.
   if (await io.exists(NATIVE_ROOT)) {
     // Retain the failed tree, including when its parameter bytes match the backup.
     const failed = journal.backup.slice(0, journal.backup.lastIndexOf('/')) + '/failed-PPSA99082';
+    await io.removeEmptyDirectory(failed);
     await io.moveDirectory(NATIVE_ROOT, failed);
   }
   if (journal.previous) await io.moveDirectory(journal.backup, NATIVE_ROOT);
@@ -126,19 +129,19 @@ async function recover(io, journal, manifest, digest) {
 export async function installOpenNow(io, options = {}) {
   const fetchFile = options.fetchFile || fetch, digest = options.digest || sha256, report = options.report || (() => {});
   report('Checking OpenNOW PS5…');
-  const response = await fetchFile('./apps/opennow/manifest.json', { cache: 'no-store' });
-  if (!response.ok) throw Error('OpenNOW manifest unavailable.');
-  const raw = new Uint8Array(await response.arrayBuffer());
-  if (raw.length > 256 * 1024 || await digest(raw) !== HASH) throw Error('OpenNOW manifest verification failed.');
-  const manifest = validatePackage(JSON.parse(decoder.decode(raw)));
   const record = await io.readFile(ROOT + '/update.json', 8192);
   if (record) {
     const j = JSON.parse(decoder.decode(record));
     if (j.schema !== 1 || !['pending', 'complete', 'rolled-back'].includes(j.status) || !hex(j.target) ||
         (j.previous !== null && !hex(j.previous)) || !/^\/data\/botty\/opennow\/backups\/[a-f0-9]{32}\/PPSA99082$/.test(j.backup))
       throw Error('OpenNOW journal damaged. Existing files preserved.');
-    await recover(io, j, manifest, digest);
+    await recover(io, j, null, digest);
   }
+  const response = await fetchFile('./apps/opennow/manifest.json', { cache: 'no-store' });
+  if (!response.ok) throw Error('OpenNOW manifest unavailable.');
+  const raw = new Uint8Array(await response.arrayBuffer());
+  if (raw.length > 256 * 1024 || await digest(raw) !== HASH) throw Error('OpenNOW manifest verification failed.');
+  const manifest = validatePackage(JSON.parse(decoder.decode(raw)));
   const result = { ready: true, version: manifest.version, consoleTested: manifest.consoleTested,
     reason: 'OpenNOW app files verified. ' + (manifest.consoleTested ? '' : 'Untested prototype. ') + 'Home screen visibility is not confirmed; use the loader refresh procedure if needed.' };
   if (await matches(io, NATIVE_ROOT, manifest, digest)) return {...result, updated: false};
