@@ -107,29 +107,68 @@ def upstream_text(repository, tag, name):
     return data.decode('utf-8')
 
 
-def compose(portal, archive, manifest, sums, tag, repository=REPOSITORY, license_text=None, notices=None):
-    validate_release(repository, tag)
-    upstream, contents = verify_delivery(archive, manifest, sums, tag)
-    license_text = license_text or upstream_text(repository, tag, 'LICENSE')
-    notices = notices or upstream_text(repository, tag, 'THIRD_PARTY_NOTICES.md')
-    licenses = {name: upstream_text(repository, tag, name) for name in LICENSES}
-    if 'GNU GENERAL PUBLIC LICENSE' not in license_text or not notices.strip():
-        raise ValueError('Missing OpenNOW GPL license or notices')
+def finalize_package(portal, package):
+    """Finalize either a verified release or a retained local package."""
     spec = importlib.util.spec_from_file_location('portal_manifest', Path(__file__).with_name('portal-manifest.py'))
     validator = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(validator)
     validator.verify(portal)
     target = portal / 'apps/opennow'
     installer = portal / 'src/opennow.js'
-    code = installer.read_text()
+    raw = (package / 'manifest.json').read_bytes()
+    record = json.loads(raw)
+    code, count = re.subn(r"const HASH\s*=\s*'[a-f0-9]{64}';", "const HASH = '" + digest(raw) + "';", installer.read_text())
+    if count != 1:
+        raise ValueError('Missing OpenNOW installer pin')
+    # Older retained packages may predate the distributed dependency notices.
+    for name in LICENSES:
+        path = package / name
+        if not path.exists():
+            path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(target / name, path)
+    if target.exists():
+        shutil.rmtree(target)
+    shutil.copytree(package, target)
+    installer.write_text(code)
+    index = portal / 'index.html'
+    description = 'Install and auto-update · ' + ('' if record['consoleTested'] else 'untested prototype · ') + 'optional'
+    index.write_text(re.sub(r'(<small id="opennow-description">)[^<]*(</small>)',
+                           lambda match: match[1] + description + match[2], index.read_text()))
+    validator.verify_packages(portal)
+    path = portal / 'manifest.json'
+    inventory = json.loads(path.read_text())
+    inventory['opennowRelease'] = record['release']
+    inventory['sha256'] = {p.relative_to(portal).as_posix(): validator.digest(p) for p in validator.public_files(portal)}
+    path.write_text(json.dumps(inventory, indent=2) + '\n')
+    validator.verify(portal)
+
+
+def reuse_package(portal, package):
+    with tempfile.TemporaryDirectory(prefix='opennow-', dir=portal.parent) as temporary:
+        stage = Path(temporary) / 'package'
+        shutil.copytree(package, stage)
+        finalize_package(portal, stage)
+
+
+def compose(portal, archive, manifest, sums, tag, repository=REPOSITORY, license_text=None, notices=None, licenses=None):
+    validate_release(repository, tag)
+    upstream, contents = verify_delivery(archive, manifest, sums, tag)
+    offline = license_text is not None and notices is not None
+    if license_text is None:
+        license_text = upstream_text(repository, tag, 'LICENSE')
+    if notices is None:
+        notices = upstream_text(repository, tag, 'THIRD_PARTY_NOTICES.md')
+    if licenses is None:
+        licenses = {name: (portal / 'apps/opennow' / name).read_text() if offline
+                    else upstream_text(repository, tag, name) for name in LICENSES}
+    if ('GNU GENERAL PUBLIC LICENSE' not in license_text or not notices.strip() or
+            any(not licenses.get(name, '').strip() for name in LICENSES)):
+        raise ValueError('Missing OpenNOW GPL license or notices')
     record = dict(schema=1, app='OpenNOW-PS5', titleId='PPSA99082', version=upstream['version'],
                   release=tag, upstream=f'https://github.com/{repository}/releases/tag/{tag}',
                   consoleTested=upstream['consoleTested'],
                   files=[dict(path=name, size=len(data), sha256=digest(data)) for name, data in sorted(contents.items())])
     raw = (json.dumps(record, indent=2) + '\n').encode()
-    code, count = re.subn(r"const HASH\s*=\s*'[a-f0-9]{64}';", "const HASH = '" + digest(raw) + "';", code)
-    if count != 1:
-        raise ValueError('Missing OpenNOW installer pin')
     # Verify all release input before replacing any package. Deployment calls this
     # only in its disposable snapshot and activates after full portal validation.
     with tempfile.TemporaryDirectory(prefix='opennow-', dir=portal.parent) as temporary:
@@ -141,43 +180,39 @@ def compose(portal, archive, manifest, sums, tag, repository=REPOSITORY, license
             path.write_bytes(data)
         (stage / 'manifest.json').write_bytes(raw)
         (stage / 'LICENSE').write_text(license_text)
-        for name, text in licenses.items():
+        for name in LICENSES:
             path = stage / name
             path.parent.mkdir(parents=True, exist_ok=True)
-            path.write_text(text)
+            path.write_text(licenses[name])
         (stage / 'NOTICE.md').write_text(
             f'OpenNOW-PS5 {tag}, distributed unmodified under the upstream GPL license.\n\n'
             f'Corresponding source and build instructions: https://github.com/{repository}/tree/{tag}\n'
             f'Source archive: https://github.com/{repository}/archive/refs/tags/{tag}.tar.gz\n\n' + notices)
-        if target.exists():
-            shutil.rmtree(target)
-        shutil.copytree(stage, target)
-    installer.write_text(code)
-    index = portal / 'index.html'
-    description = 'Install and auto-update · ' + ('' if upstream['consoleTested'] else 'untested prototype · ') + 'optional'
-    index.write_text(re.sub(r'(<small id="opennow-description">)[^<]*(</small>)',
-                           lambda match: match[1] + description + match[2], index.read_text()))
-    validator.verify_packages(portal)
-    path = portal / 'manifest.json'
-    inventory = json.loads(path.read_text())
-    inventory['opennowRelease'] = tag
-    inventory['sha256'] = {p.relative_to(portal).as_posix(): validator.digest(p) for p in validator.public_files(portal)}
-    path.write_text(json.dumps(inventory, indent=2) + '\n')
-    validator.verify(portal)
+        finalize_package(portal, stage)
 
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, required=True)
-    parser.add_argument('--zip', type=Path, required=True)
-    parser.add_argument('--manifest', type=Path, required=True)
-    parser.add_argument('--sums', type=Path, required=True)
-    parser.add_argument('--tag', required=True)
+    parser.add_argument('--zip', type=Path)
+    parser.add_argument('--manifest', type=Path)
+    parser.add_argument('--sums', type=Path)
+    parser.add_argument('--tag')
     parser.add_argument('--repository', default=REPOSITORY)
     parser.add_argument('--license', type=Path)
     parser.add_argument('--notices', type=Path)
+    parser.add_argument('--licenses', type=Path, help='Local directory containing libsrtp.txt and usrsctp.txt')
+    parser.add_argument('--package', type=Path, help='Reuse an existing local OpenNOW package')
     args = parser.parse_args()
-    compose(args.root, args.zip, args.manifest, args.sums, args.tag, args.repository,
-            args.license.read_text() if args.license else None,
-            args.notices.read_text() if args.notices else None)
+    if args.package:
+        if any((args.zip, args.manifest, args.sums, args.tag, args.license, args.notices, args.licenses)):
+            parser.error('--package cannot be combined with release inputs')
+        reuse_package(args.root, args.package)
+    else:
+        if not all((args.zip, args.manifest, args.sums, args.tag)):
+            parser.error('--zip, --manifest, --sums and --tag are required for release composition')
+        compose(args.root, args.zip, args.manifest, args.sums, args.tag, args.repository,
+                args.license.read_text() if args.license else None,
+                args.notices.read_text() if args.notices else None,
+                {name: (args.licenses / Path(name).name).read_text() for name in LICENSES} if args.licenses else None)
     print('Verified OpenNOW package composed into portal')

@@ -249,39 +249,8 @@ def opennow_release_or_pinned(repository, pinned):
 
 def preserve_opennow(portal, current):
     """Reuse the active public package when release discovery is unavailable."""
-    previous = json.loads((current / 'manifest.json').read_text())
-    path = portal / 'manifest.json'
-    inventory = json.loads(path.read_text())
-    package = portal / 'apps/opennow'
-    if (current / 'apps/opennow').is_dir():
-        # Keep newly supplied dependency notices when the active release predates
-        # their inclusion in the public inventory.
-        notices = {p.relative_to(package).as_posix(): p.read_bytes()
-                   for p in (package / 'licenses').rglob('*') if p.is_file()}
-        if package.exists():
-            shutil.rmtree(package)
-        shutil.copytree(current / 'apps/opennow', package)
-        added = {}
-        for name, data in notices.items():
-            notice = package / name
-            if not notice.exists():
-                notice.parent.mkdir(parents=True, exist_ok=True)
-                notice.write_bytes(data)
-                added['apps/opennow/' + name] = hashlib.sha256(data).hexdigest()
-        installer = portal / 'src/opennow.js'
-        pin = hashlib.sha256((package / 'manifest.json').read_bytes()).hexdigest()
-        code, count = re.subn(r"const HASH\s*=\s*'[a-f0-9]{64}';", "const HASH = '" + pin + "';", installer.read_text())
-        if count != 1:
-            raise RuntimeError('Missing OpenNOW installer pin')
-        installer.write_text(code)
-        inventory['sha256'] = {name: value for name, value in inventory['sha256'].items()
-                               if not name.startswith('apps/opennow/')}
-        inventory['sha256'].update({name: value for name, value in previous['sha256'].items()
-                                    if name.startswith('apps/opennow/')})
-        inventory['sha256'].update(added)
-        inventory['sha256']['src/opennow.js'] = hashlib.sha256(installer.read_bytes()).hexdigest()
-    inventory['opennowRelease'] = previous.get('opennowRelease')
-    path.write_text(json.dumps(inventory, indent=2) + '\n')
+    command([sys.executable, str(portal.parent / 'scripts/compose-opennow.py'),
+             '--root', str(portal), '--package', str(current / 'apps/opennow')])
 
 
 def download_opennow(repository, tag, assets, destination):

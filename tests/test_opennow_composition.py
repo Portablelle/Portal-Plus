@@ -2,6 +2,7 @@ import hashlib
 import json
 from pathlib import Path
 import stat
+import shutil
 import unittest
 from unittest.mock import patch
 import zipfile
@@ -46,7 +47,7 @@ class OpenNowCompositionTests(unittest.TestCase):
         return compose.verify_delivery(self.archive, self.manifest, self.sums, '0.2.0')
 
     def run_compose(self):
-        with patch.object(compose, 'upstream_text', side_effect=lambda repo, tag, name: 'Complete notice: ' + name):
+        with patch.object(compose, 'upstream_text', side_effect=AssertionError('Network access during offline composition')):
             compose.compose(self.root, self.archive, self.manifest, self.sums, '0.2.0',
                             license_text='GNU GENERAL PUBLIC LICENSE', notices='Upstream notices')
 
@@ -61,16 +62,51 @@ class OpenNowCompositionTests(unittest.TestCase):
         self.assertIn('/tree/0.2.0', (self.root / 'apps/opennow/NOTICE.md').read_text())
         self.assertEqual(json.loads((self.root / 'manifest.json').read_text())['opennowRelease'], '0.2.0')
         for name in compose.LICENSES:
-            self.assertEqual((self.root / 'apps/opennow' / name).read_text(), 'Complete notice: ' + name)
+            self.assertEqual((self.root / 'apps/opennow' / name).read_text(), 'public')
             self.assertIn('apps/opennow/' + name, json.loads((self.root / 'manifest.json').read_text())['sha256'])
 
     def test_missing_dependency_notice_preserves_existing_package(self):
         before = (self.root / 'manifest.json').read_bytes()
-        with patch.object(compose, 'upstream_text', side_effect=OSError('offline')):
-            with self.assertRaisesRegex(OSError, 'offline'):
+        (self.root / 'apps/opennow' / compose.LICENSES[0]).unlink()
+        with patch.object(compose, 'upstream_text', side_effect=AssertionError('Network access')):
+            with self.assertRaises(FileNotFoundError):
                 compose.compose(self.root, self.archive, self.manifest, self.sums, '0.2.0',
                                 license_text='GNU GENERAL PUBLIC LICENSE', notices='Upstream notices')
         self.assertEqual((self.root / 'manifest.json').read_bytes(), before)
+        self.write('apps/opennow/' + compose.LICENSES[0])
+        portal.verify(self.root)
+
+    def test_reuse_shares_finalization_and_keeps_local_notices_and_new_installer_code(self):
+        with patch.object(compose, 'finalize_package', wraps=compose.finalize_package) as finalize:
+            self.run_compose()
+            package = self.root.parent / 'pinned'
+            shutil.copytree(self.root / 'apps/opennow', package)
+            raw = (package / 'manifest.json').read_bytes()
+            (package / compose.LICENSES[1]).unlink()
+            self.contents['eboot.bin'] = b'new release'
+            self.package()
+            self.run_compose()
+            installer = self.root / 'src/opennow.js'
+            installer.write_text(installer.read_text() + '// new recovery code\n')
+            self.refresh()
+            with patch.object(compose.urllib.request, 'urlopen', side_effect=AssertionError('Network access')):
+                compose.reuse_package(self.root, package)
+            self.assertEqual(finalize.call_count, 3)
+        self.assertEqual((self.root / 'apps/opennow/manifest.json').read_bytes(), raw)
+        self.assertIn(compose.digest(raw), installer.read_text())
+        self.assertIn('// new recovery code', installer.read_text())
+        self.assertFalse((package / compose.LICENSES[1]).exists())
+        for name in compose.LICENSES:
+            self.assertEqual((self.root / 'apps/opennow' / name).read_text(), 'public')
+        portal.verify(self.root)
+
+    def test_explicit_local_dependency_notices_avoid_network(self):
+        licenses = {name: 'Local complete notice: ' + name for name in compose.LICENSES}
+        with patch.object(compose.urllib.request, 'urlopen', side_effect=AssertionError('Network access')):
+            compose.compose(self.root, self.archive, self.manifest, self.sums, '0.2.0',
+                            license_text='GNU GENERAL PUBLIC LICENSE', notices='Local notices', licenses=licenses)
+        for name, text in licenses.items():
+            self.assertEqual((self.root / 'apps/opennow' / name).read_text(), text)
         portal.verify(self.root)
 
     def test_bad_checksums_preserve_existing_package_and_pins(self):

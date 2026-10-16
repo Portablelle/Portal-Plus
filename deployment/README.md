@@ -236,13 +236,20 @@ it as an untested prototype; app visibility is not automatically confirmed.
 
 To compose a downloaded release locally (the license and notices are fetched
 read-only from the same upstream tag; offline copies can be supplied with
-`--license` and `--notices`):
+`--license` and `--notices`; supplying both uses the committed dependency
+notices in `vps-site/apps/opennow/licenses/` without network access. Override
+that directory with `--licenses /path/to/licenses`, containing `libsrtp.txt`
+and `usrsctp.txt`):
 
 ```sh
 python3 scripts/compose-opennow.py --root vps-site --tag 0.2.0 \
   --zip /tmp/on/OpenNOW-PS5-0.2.0.zip \
   --manifest /tmp/on/OpenNOW-PS5-0.2.0.manifest.json --sums /tmp/on/SHA256SUMS
 ```
+
+To reuse a previously composed local package, use
+`python3 scripts/compose-opennow.py --root vps-site --package /path/to/apps/opennow`.
+This uses the same installer pin and inventory finalization as release composition.
 
 After merging updates to the synchronization service itself, reinstall
 `deployment/sync-portal-main.py` and the service/timer units using the commands

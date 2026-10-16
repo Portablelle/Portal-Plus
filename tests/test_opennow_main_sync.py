@@ -18,9 +18,10 @@ class OpenNowSyncTests(unittest.TestCase):
         (self.repo / 'scripts/compose-opennow.py').write_text('''import argparse, hashlib, json
 from pathlib import Path
 p=argparse.ArgumentParser();p.add_argument('--root',type=Path)
-for name in ['zip','manifest','sums','tag','repository']:p.add_argument('--'+name)
+for name in ['zip','manifest','sums','tag','repository','package']:p.add_argument('--'+name)
 a=p.parse_args()
-if Path(a.zip).read_text() == 'broken':raise SystemExit('Invalid release')
+if a.package:a.tag=json.loads((Path(a.package).parents[1]/'manifest.json').read_text())['opennowRelease']
+if a.zip and Path(a.zip).read_text() == 'broken':raise SystemExit('Invalid release')
 index=a.root/'index.html';index.write_text(index.read_text()+' / OpenNOW '+a.tag)
 path=a.root/'manifest.json';m=json.loads(path.read_text());m['opennowRelease']=a.tag
 m['sha256']={name:hashlib.sha256((a.root/name).read_bytes()).hexdigest() for name in m['sha256']}
@@ -85,32 +86,13 @@ path.write_text(json.dumps(m))
     def test_recheck_failure_does_not_block_verified_publication(self):
         self.assertTrue(self.deploy_open(tags=[(self.tag, {}), OSError('rate limited')]).startswith('deployed'))
 
-    def test_pinned_package_and_notices_survive_without_reverting_new_installer_code(self):
-        current = self.base / 'pinned'
-        package = current / 'apps/opennow'
-        (package / 'licenses').mkdir(parents=True)
-        (package / 'manifest.json').write_text('pinned manifest')
-        (package / 'licenses/libsrtp.txt').write_text('complete notice')
-        hashes = {path.relative_to(current).as_posix(): sync.hashlib.sha256(path.read_bytes()).hexdigest()
-                  for path in package.rglob('*') if path.is_file()}
-        (current / 'manifest.json').write_text(json.dumps(dict(opennowRelease=self.tag, sha256=hashes)))
+    def test_preserve_uses_local_package_composition(self):
         portal = self.repo / 'vps-site'
-        notice = portal / 'apps/opennow/licenses/usrsctp.txt'
-        notice.parent.mkdir(parents=True)
-        notice.write_text('newly supplied missing notice')
-        installer = portal / 'src/opennow.js'
-        installer.write_text("const HASH = '" + '0' * 64 + "';\n// new recovery code\n")
-        sync.preserve_opennow(portal, current)
-        self.assertIn('// new recovery code', installer.read_text())
-        self.assertIn(hashes['apps/opennow/manifest.json'], installer.read_text())
-        inventory = json.loads((portal / 'manifest.json').read_text())
-        self.assertEqual(inventory['opennowRelease'], self.tag)
-        self.assertEqual(notice.read_text(), 'newly supplied missing notice')
-        self.assertEqual(inventory['sha256']['apps/opennow/licenses/usrsctp.txt'],
-                         sync.hashlib.sha256(notice.read_bytes()).hexdigest())
-        for name, value in hashes.items():
-            self.assertEqual(sync.hashlib.sha256((portal / name).read_bytes()).hexdigest(), value)
-            self.assertEqual(inventory['sha256'][name], value)
+        with patch.object(sync, 'command') as command:
+            sync.preserve_opennow(portal, self.manual)
+        command.assert_called_once_with([
+            sync.sys.executable, str(self.repo / 'scripts/compose-opennow.py'),
+            '--root', str(portal), '--package', str(self.manual / 'apps/opennow')])
 
     def test_public_api_requires_stable_complete_bounded_release(self):
         def record():
