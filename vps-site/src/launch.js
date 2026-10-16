@@ -1,3 +1,4 @@
+import { OpenNowIO, installOpenNow } from './opennow.js';
 import { CodexIO, startCodex, codexStatus } from './codex.js';
 import { normalizeLaunchServices, supportsPpr } from './launch-options.js';
 import { CheatRunnerIO, installAndStartCheatRunner, cheatRunnerStatus } from './cheatrunner.js';
@@ -46,6 +47,15 @@ export async function launchSession(options) {
     // Publish the complete title before ShadowMountPlus scans the homebrew directory.
     const native = await runStep('native', () => atStage('Botty+ native installation', () => (options.native || installNative)(options.nativeIO || new NativeIO(runtime), { report, reuseNewer: true })), { enabled: services.botty });
     if (services.botty) record('native', 'ready', 'Installed app prepared or recognized and preserved. Home screen visibility is not confirmed.');
+    let opennow = { skipped: true };
+    if (services.opennow) {
+      step = 'opennow';
+      try {
+        opennow = await runStep('opennow', () => (options.opennow || installOpenNow)(options.opennowIO || new OpenNowIO(runtime), { report }));
+      } catch (error) { opennow = optionalFailure('OpenNOW PS5', error); }
+      Object.assign(summary.components.opennow, optionalComponent(opennow, 'App files prepared; home screen visibility is not confirmed.'));
+      report(opennow.reason || 'OpenNOW app files prepared.');
+    }
     step = 'kstuff';
     await atStage('Required payloads', () => loadRequiredPayloads(runtime, { send: async (runtime, name) => {
       await inspectAccess('before ' + name);
@@ -115,7 +125,7 @@ export async function launchSession(options) {
     }, { enabled: services.rtorrent || services.botty });
     if (!services.rtorrent && !services.botty) report('rTorrent startup skipped by launch options.');
     failed = false;
-    return {native, rtorrent, manager, cheatrunner, codex, summary: finishSessionResult(summary)};
+    return {native, rtorrent, manager, cheatrunner, codex, opennow, summary: finishSessionResult(summary)};
   } catch (error) {
     record(step, error.deferred ? 'deferred' : 'failed', safeLog(error.logMessage || error.message || String(error)));
     error.sessionResult = finishSessionResult(summary, true);

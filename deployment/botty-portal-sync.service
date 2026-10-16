@@ -1,5 +1,5 @@
 [Unit]
-Description=Publish Portal+ main with verified Botty+ and Codex PS5 main packages
+Description=Publish Portal+ main with verified Botty+ and Codex PS5 main packages and stable OpenNOW releases
 Wants=network-online.target
 After=network-online.target
 

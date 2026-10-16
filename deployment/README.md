@@ -171,8 +171,8 @@ public IP changes, update the resolver's firewall allowlist.
 
 ### Portal
 
-For automatic publication from Portal+, Botty+ and Codex PS5 `main`, install the pull-based service below on
-the portal server (Python 3.12+, Git, GitHub CLI, and outbound HTTPS to GitHub are required).
+For automatic publication from Portal+, Botty+ and Codex PS5 `main`, plus the
+latest stable OpenNOW PS5 release, install the pull-based service below on the portal server (Python 3.12+, Git, GitHub CLI, and outbound HTTPS to GitHub are required).
 It schedules the next check of `main` 60 seconds after each sync run finishes
 and exports only manifest-verified public files,
 rechecks the remote commit before activation, and atomically changes `current`.
@@ -190,10 +190,14 @@ sudo install -m 0644 deployment/botty-portal-sync.service deployment/botty-porta
 sudo systemctl daemon-reload
 ```
 
-Set `BOTTY_PORTAL_REPOSITORY`, `BOTTY_APP_REPOSITORY` and `CODEX_APP_REPOSITORY` in
+Set `BOTTY_PORTAL_REPOSITORY`, `BOTTY_APP_REPOSITORY`, `CODEX_APP_REPOSITORY` and
+`OPENNOW_APP_REPOSITORY` in
 `/etc/botty-portal-sync.env` when using other repositories. Defaults are
 `https://github.com/Portablelle/Portal-Plus.git`,
-`https://github.com/Portablelle/Botty-Plus.git` and `Portablelle/Codex-PS5`. All follow `main`.
+`https://github.com/Portablelle/Botty-Plus.git` and `Portablelle/Codex-PS5`.
+These three follow `main`. OpenNOW defaults to `OpenCloudGaming/OpenNOW-PS5`
+and follows the latest non-prerelease GitHub release (also configurable with
+`--opennow-repository`). Its public API and asset downloads require no token.
 The public Portal+/Botty+ repositories require no GitHub or SSH secret. Codex is
 private: provision a read-only GitHub token with repository contents access as
 `GH_TOKEN` in the service's root-owned, mode-0600 environment file. Do not put it
@@ -214,8 +218,31 @@ and service blocks, payload descriptor and corresponding source archive, then
 updates both installer pins and the public manifest. Missing, failed or stale
 Codex builds keep the previous portal online and are retried on the next timer
 run; a versioned release from an older commit is never substituted for `main`.
-The deployment record contains all three commits. Packages must be built and
-committed in Botty+; the portal VPS does not compile PS5 binaries.
+The deployment record contains all three commits and `opennowRelease`. Botty+
+packages must be built and committed in Botty+; the portal VPS does not compile PS5 binaries.
+
+OpenNOW release tags are included in the deployment identity, so an upstream
+release alone triggers publication. The sync downloads the versioned ZIP,
+manifest and SHA256SUMS, verifies both asset hashes and every app file, rejects
+unsafe archives, and composes the package with its GPL license, upstream notices
+and a corresponding-source link to the same tag. It updates the installer pin
+and portal manifest, then rechecks the release before atomic activation. Missing
+assets, invalid hashes or composition failures preserve the last working portal.
+OpenNOW is unchecked by default. Selecting it installs or updates the complete
+`/data/homebrew/PPSA99082` title before ShadowMountPlus runs; updates retain a
+backup outside the loader directory and refuse to replace running native apps.
+Disabling the option preserves installed files. The bundled 0.2.0 manifest marks
+it as an untested prototype; app visibility is not automatically confirmed.
+
+To compose a downloaded release locally (the license and notices are fetched
+read-only from the same upstream tag; offline copies can be supplied with
+`--license` and `--notices`):
+
+```sh
+python3 scripts/compose-opennow.py --root vps-site --tag 0.2.0 \
+  --zip /tmp/on/OpenNOW-PS5-0.2.0.zip \
+  --manifest /tmp/on/OpenNOW-PS5-0.2.0.manifest.json --sums /tmp/on/SHA256SUMS
+```
 
 After merging updates to the synchronization service itself, reinstall
 `deployment/sync-portal-main.py` and the service/timer units using the commands

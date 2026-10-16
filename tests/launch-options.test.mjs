@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { bindLaunchOptions, normalizeLaunchServices, supportsPpr } from '../vps-site/src/launch-options.js';
 
 function fixture(saved, unavailable = false, firmware = '11.20') {
-  const inputs = ['ftp', 'rtorrent', 'cheatrunner', 'ppr', 'codex', 'botty'].map(name => ({ name, addEventListener(_, handler) { this.change = handler; } }));
+  const inputs = ['ftp', 'rtorrent', 'cheatrunner', 'ppr', 'codex', 'botty', 'opennow'].map(name => ({ name, addEventListener(_, handler) { this.change = handler; } }));
   const elements = { 'launch-services': { querySelector: selector => inputs.find(input => selector.includes('"' + input.name + '"')) },
     'launch-options-storage': {}, 'launch-options-summary': {}, 'launch-options': { open: true }, 'launch-advanced': { open: false },
     'rtorrent-option': {}, 'rtorrent-included': {}, 'ppr-availability': {} };
@@ -17,7 +17,7 @@ function fixture(saved, unavailable = false, firmware = '11.20') {
 
 test('preferences default on and only explicit false disables startup', () => {
   for (const value of [undefined, null, {}, [], 'bad', { ftp: 'false', rtorrent: 0 }])
-    assert.deepEqual(normalizeLaunchServices(value), { ftp: true, rtorrent: true, cheatrunner: true, ppr: false, codex: false, botty: true });
+    assert.deepEqual(normalizeLaunchServices(value), { ftp: true, rtorrent: true, cheatrunner: true, ppr: false, codex: false, botty: true, opennow: false });
 });
 test('Botty disables standalone rTorrent and preserves its saved choice', () => {
   for (const standalone of [false, true]) {
@@ -41,9 +41,9 @@ test('Botty disables standalone rTorrent and preserves its saved choice', () => 
 });
 test('saved choices restore, changes persist, launch locks a snapshot', () => {
   const f = fixture('{"ftp":false,"rtorrent":true,"cheatrunner":false}');
-  assert.deepEqual(f.inputs.map(input => input.checked), [false, true, false, false, false, true]);
+  assert.deepEqual(f.inputs.map(input => input.checked), [false, true, false, false, false, true, false]);
   f.inputs[1].checked = false; f.inputs[1].change();
-  assert.deepEqual(JSON.parse(f.saved()), { ftp: false, rtorrent: false, cheatrunner: false, ppr: false, codex: false, botty: true });
+  assert.deepEqual(JSON.parse(f.saved()), { ftp: false, rtorrent: false, cheatrunner: false, ppr: false, codex: false, botty: true, opennow: false });
   assert.equal(f.elements['launch-options-summary'].textContent, 'Botty+ (includes rTorrent)');
   const selected = f.control.lock();
   assert.equal(f.elements['launch-services'].disabled, true);
