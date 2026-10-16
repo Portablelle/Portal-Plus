@@ -1,5 +1,5 @@
 import { checkedPath } from './ps5-io.js';
-import { NativeTitleIO } from './native-title-io.js';
+import { NativeTitleIO, NativeTitleTransaction } from './native-title-io.js';
 import { sha256 } from './transmission.js';
 import { diagnosticError } from './diagnostics.js';
 
@@ -135,41 +135,27 @@ function identity(bytes, targetVersion, reuseNewer = false) {
   return value;
 }
 
-async function matches(io, root, manifest, digest) {
-  for (const file of manifest.files) {
-    const bytes = await io.readFile(root + '/' + file.path, MAX_NATIVE_FILE_BYTES);
-    if (!bytes || bytes.length !== file.size || await digest(bytes) !== file.sha256) return false;
-  }
-  return true;
-}
-
-async function recover(io, journal, manifest, digest, report) {
-  if (journal.status !== 'pending') return;
-  if (journal.target === HASH && await matches(io, NATIVE_ROOT, manifest, digest)) {
-    await io.syncRegisteredMetadata(manifest, journal.backup, digest);
-    await io.writeJournal({...journal, status: 'complete'});
-    report('Previous Botty+ update verified. Backup retained.');
-    return;
-  }
-  const current = await io.readFile(NATIVE_ROOT + '/sce_sys/param.json', 16384);
-  if (current && await digest(current) === journal.previous) {
-    await io.writeJournal({...journal, status: 'rolled-back'});
-    return; // The original tree was never moved, or was already restored.
-  }
-  const saved = await io.readFile(journal.backup + '/sce_sys/param.json', 16384);
-  if (!saved || await digest(saved) !== journal.previous)
-    throw Error('Native recovery backup is unavailable. Existing files were preserved.');
-  if (current) throw Error('Native recovery found unexpected title files. Existing files were preserved.');
-  await io.assertNativeStopped();
-  await io.restoreNative(journal.backup);
-  await io.writeJournal({...journal, status: 'rolled-back'});
-  report('Previous Botty+ restored after an interrupted update.');
+function transaction(io, digest, report) {
+  return new NativeTitleTransaction(io, {
+    root: NATIVE_ROOT, stage: STAGE, hash: HASH, limit: MAX_NATIVE_FILE_BYTES, digest,
+    save: (value, exclusive) => io.writeJournal(value, exclusive),
+    backup: path => io.backupNative(path), restore: path => io.restoreNative(path),
+    publish: () => io.publishNative(),
+    afterPublish: (manifest, backup) => io.syncRegisteredMetadata(manifest, backup, digest),
+    backupError: 'Native recovery backup is unavailable. Existing files were preserved.',
+    unexpectedError: 'Native recovery found unexpected title files. Existing files were preserved.',
+    publicationError: 'Published native title verification failed.',
+    recoveryError: () => diagnosticError('NATIVE_RECOVERY_REQUIRED', 'Botty+ update interrupted. Backup retained; restart to recover before opening the app.', 'Native title publication or recovery is incomplete. Keep Botty+ closed. Restart your PS5 before a new session can recover the retained backup.'),
+    recoveryVerified: () => report('Previous Botty+ update verified. Backup retained.'),
+    recoveryRestored: () => report('Previous Botty+ restored after an interrupted update.'),
+  });
 }
 
 export async function installNative(io, options = {}) {
   const fetchFile = options.fetchFile || fetch;
   const digest = options.digest || sha256;
   const report = options.report || (() => {});
+  const update = transaction(io, digest, report);
   report('Checking Botty+…');
   const response = await fetchFile('./apps/botty-native/manifest.json', { cache: 'no-store' });
   if (!response.ok) throw diagnosticError('PACKAGE_HTTP_ERROR', 'Botty+ manifest unavailable (HTTP ' + response.status + ').');
@@ -195,18 +181,18 @@ export async function installNative(io, options = {}) {
         !/^[a-f0-9]{64}$/.test(journal.target) || !/^[a-f0-9]{64}$/.test(journal.previous) ||
         (!legacyComplete && !/^\/data\/botty\/native\/backups\/[a-f0-9]{32}\/PPSA99071$/.test(journal.backup)))
       throw Error('Native update journal is damaged. Existing files were preserved.');
-    await recover(io, journal, manifest, digest, report);
+    await update.recover(journal, manifest);
   }
   let installed = await io.nativeExists();
   // A power loss during first publication may leave only an empty reservation.
   if (installed && !await io.readFile(NATIVE_ROOT + '/sce_sys/param.json', 16384) &&
-      await matches(io, STAGE, manifest, digest)) {
+      await update.matches(STAGE, manifest)) {
     await io.assertNativeStopped();
     if (await io.removeEmptyNative()) installed = false;
   }
   let previous;
   if (installed) {
-    if (await matches(io, NATIVE_ROOT, manifest, digest)) {
+    if (await update.matches(NATIVE_ROOT, manifest)) {
       // Hashes cannot detect permissions left by an older installer.
       await io.prepareNativePermissions(NATIVE_ROOT);
       report('Botty+ ' + manifest.version + ' is already installed.');
@@ -224,42 +210,17 @@ export async function installNative(io, options = {}) {
     report('Preparing Botty+ update to ' + manifest.version + '…');
   } else report('Installing Botty+ ' + manifest.version + '…');
 
-  for (const file of manifest.files) {
-    const path = STAGE + '/' + file.path;
-    let data = await io.readFile(path, MAX_NATIVE_FILE_BYTES);
-    if (data && data.length === file.size && await digest(data) === file.sha256) continue;
-    const result = await fetchFile('./apps/botty-native/' + file.path, { cache: 'no-store' });
-    if (!result.ok) throw Error('Native file download failed: ' + file.path);
-    data = new Uint8Array(await result.arrayBuffer());
-    if (data.length !== file.size || await digest(data) !== file.sha256) throw Error('Native file verification failed: ' + file.path);
-    await io.mkdirs(path.slice(0, path.lastIndexOf('/')));
-    await io.writeFile(path, data);
-    const disk = await io.readFile(path, file.size);
-    if (!disk || await digest(disk) !== file.sha256) throw Error('Native installation verification failed.');
-  }
-  if (!await matches(io, STAGE, manifest, digest)) throw Error('Native staging verification failed.');
+  await update.stage(manifest, fetchFile, {
+    url: './apps/botty-native/', verifyWritten: true,
+    downloadError: file => 'Native file download failed: ' + file.path,
+    fileError: file => 'Native file verification failed: ' + file.path,
+    writeError: 'Native installation verification failed.', stageError: 'Native staging verification failed.',
+  });
   if (installed) {
-    await io.assertNativeStopped();
-    const current = await io.readFile(NATIVE_ROOT + '/sce_sys/param.json', 16384);
-    if (!current || await digest(current) !== await digest(previous))
-      throw Error('Installed title changed during preparation. Existing files were preserved.');
-    const random = crypto.getRandomValues(new Uint8Array(16));
-    const id = Array.from(random, x => x.toString(16).padStart(2, '0')).join('');
-    journal = {schema: 1, status: 'pending', target: HASH, previous: await digest(previous),
-      backup: BACKUPS + '/' + id + '/PPSA99071'};
-    await io.writeJournal(journal, !record);
-    try {
-      await io.backupNative(journal.backup);
-      await io.publishNative();
-      if (!await matches(io, NATIVE_ROOT, manifest, digest)) throw Error('Published native title verification failed.');
-      await io.syncRegisteredMetadata(manifest, journal.backup, digest);
-      await io.writeJournal({...journal, status: 'complete'});
-    } catch (error) {
-      // Restore only if the live path is absent/empty; never delete uncertain content.
-      try { await recover(io, journal, manifest, digest, report); }
-      catch (_) { throw diagnosticError('NATIVE_RECOVERY_REQUIRED', 'Botty+ update interrupted. Backup retained; restart to recover before opening the app.', 'Native title publication or recovery is incomplete. Keep Botty+ closed. Restart your PS5 before a new session can recover the retained backup.'); }
-      throw error;
-    }
+    await update.assertUnchanged(async current => current && await digest(current) === await digest(previous),
+      'Installed title changed during preparation. Existing files were preserved.');
+    journal = await update.journal(previous, BACKUPS);
+    await update.publish(journal, manifest, !record);
     report('Botty+ updated to ' + manifest.version + '. Previous version backed up.');
   } else {
     await io.publishNative();

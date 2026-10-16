@@ -3,6 +3,7 @@ import json
 from pathlib import Path
 import stat
 import unittest
+from unittest.mock import patch
 import zipfile
 
 import test_release as release
@@ -45,8 +46,9 @@ class OpenNowCompositionTests(unittest.TestCase):
         return compose.verify_delivery(self.archive, self.manifest, self.sums, '0.2.0')
 
     def run_compose(self):
-        compose.compose(self.root, self.archive, self.manifest, self.sums, '0.2.0',
-                        license_text='GNU GENERAL PUBLIC LICENSE', notices='Upstream notices')
+        with patch.object(compose, 'upstream_text', side_effect=lambda repo, tag, name: 'Complete notice: ' + name):
+            compose.compose(self.root, self.archive, self.manifest, self.sums, '0.2.0',
+                            license_text='GNU GENERAL PUBLIC LICENSE', notices='Upstream notices')
 
     def test_composes_and_exports_complete_pinned_package(self):
         self.run_compose()
@@ -58,6 +60,18 @@ class OpenNowCompositionTests(unittest.TestCase):
         self.assertEqual({f['path'] for f in record['files']}, set(self.contents))
         self.assertIn('/tree/0.2.0', (self.root / 'apps/opennow/NOTICE.md').read_text())
         self.assertEqual(json.loads((self.root / 'manifest.json').read_text())['opennowRelease'], '0.2.0')
+        for name in compose.LICENSES:
+            self.assertEqual((self.root / 'apps/opennow' / name).read_text(), 'Complete notice: ' + name)
+            self.assertIn('apps/opennow/' + name, json.loads((self.root / 'manifest.json').read_text())['sha256'])
+
+    def test_missing_dependency_notice_preserves_existing_package(self):
+        before = (self.root / 'manifest.json').read_bytes()
+        with patch.object(compose, 'upstream_text', side_effect=OSError('offline')):
+            with self.assertRaisesRegex(OSError, 'offline'):
+                compose.compose(self.root, self.archive, self.manifest, self.sums, '0.2.0',
+                                license_text='GNU GENERAL PUBLIC LICENSE', notices='Upstream notices')
+        self.assertEqual((self.root / 'manifest.json').read_bytes(), before)
+        portal.verify(self.root)
 
     def test_bad_checksums_preserve_existing_package_and_pins(self):
         before = (self.root / 'manifest.json').read_bytes()

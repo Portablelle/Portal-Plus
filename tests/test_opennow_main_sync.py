@@ -69,6 +69,49 @@ path.write_text(json.dumps(m))
         self.assertEqual(self.deploy_open(tags=[('0.3.0', {}), ('0.4.0', {})]), 'superseded')
         self.assertEqual((self.root / 'current').resolve(), previous)
 
+    def test_release_lookup_failure_keeps_pinned_release_and_allows_portal_update(self):
+        self.deploy_open()
+        for error in (OSError('offline'), RuntimeError('rate limited'), ValueError('bad metadata')):
+            with self.subTest(error=error), patch.object(sync, 'opennow_release', side_effect=error), \
+                    patch.object(sync, 'download_opennow') as download:
+                self.assertEqual(sync.sync_main(str(self.repo), self.state, self.root,
+                    opennow_repository='OpenCloudGaming/OpenNOW-PS5'), 'unchanged')
+                self.commit('portal ' + str(error))
+                self.assertTrue(sync.sync_main(str(self.repo), self.state, self.root,
+                    opennow_repository='OpenCloudGaming/OpenNOW-PS5').startswith('deployed'))
+                self.assertEqual(json.loads((self.state / 'last-deploy.json').read_text())['opennowRelease'], self.tag)
+                download.assert_not_called()
+
+    def test_recheck_failure_does_not_block_verified_publication(self):
+        self.assertTrue(self.deploy_open(tags=[(self.tag, {}), OSError('rate limited')]).startswith('deployed'))
+
+    def test_pinned_package_and_notices_survive_without_reverting_new_installer_code(self):
+        current = self.base / 'pinned'
+        package = current / 'apps/opennow'
+        (package / 'licenses').mkdir(parents=True)
+        (package / 'manifest.json').write_text('pinned manifest')
+        (package / 'licenses/libsrtp.txt').write_text('complete notice')
+        hashes = {path.relative_to(current).as_posix(): sync.hashlib.sha256(path.read_bytes()).hexdigest()
+                  for path in package.rglob('*') if path.is_file()}
+        (current / 'manifest.json').write_text(json.dumps(dict(opennowRelease=self.tag, sha256=hashes)))
+        portal = self.repo / 'vps-site'
+        notice = portal / 'apps/opennow/licenses/usrsctp.txt'
+        notice.parent.mkdir(parents=True)
+        notice.write_text('newly supplied missing notice')
+        installer = portal / 'src/opennow.js'
+        installer.write_text("const HASH = '" + '0' * 64 + "';\n// new recovery code\n")
+        sync.preserve_opennow(portal, current)
+        self.assertIn('// new recovery code', installer.read_text())
+        self.assertIn(hashes['apps/opennow/manifest.json'], installer.read_text())
+        inventory = json.loads((portal / 'manifest.json').read_text())
+        self.assertEqual(inventory['opennowRelease'], self.tag)
+        self.assertEqual(notice.read_text(), 'newly supplied missing notice')
+        self.assertEqual(inventory['sha256']['apps/opennow/licenses/usrsctp.txt'],
+                         sync.hashlib.sha256(notice.read_bytes()).hexdigest())
+        for name, value in hashes.items():
+            self.assertEqual(sync.hashlib.sha256((portal / name).read_bytes()).hexdigest(), value)
+            self.assertEqual(inventory['sha256'][name], value)
+
     def test_public_api_requires_stable_complete_bounded_release(self):
         def record():
             return dict(tag_name='0.2.0', prerelease=False, draft=False, assets=[
@@ -76,11 +119,16 @@ path.write_text(json.dumps(m))
                 dict(name='OpenNOW-PS5-0.2.0.manifest.json', size=100),
                 dict(name='SHA256SUMS', size=100)])
         m = record()
-        with patch.object(sync.urllib.request, 'urlopen', return_value=io.BytesIO(json.dumps(m).encode())) as get:
+        with patch.dict(sync.os.environ, {'GITHUB_TOKEN': ''}), \
+                patch.object(sync.urllib.request, 'urlopen', return_value=io.BytesIO(json.dumps(m).encode())) as get:
             self.assertEqual(sync.opennow_release('owner/repo')[0], '0.2.0')
             request = get.call_args.args[0]
             self.assertEqual(request.full_url, 'https://api.github.com/repos/owner/repo/releases/latest')
             self.assertFalse(request.has_header('Authorization'))
+        with patch.dict(sync.os.environ, {'GITHUB_TOKEN': 'test-token'}), \
+                patch.object(sync.urllib.request, 'urlopen', return_value=io.BytesIO(json.dumps(m).encode())) as get:
+            sync.opennow_release('owner/repo')
+            self.assertEqual(get.call_args.args[0].get_header('Authorization'), 'Bearer test-token')
         for case in ('draft', 'prerelease', 'missing', 'size', 'tag', 'duplicate'):
             m = record()
             if case in ('draft', 'prerelease'): m[case] = True

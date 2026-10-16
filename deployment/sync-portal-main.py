@@ -212,6 +212,8 @@ def opennow_release(repository):
         raise RuntimeError('Invalid OpenNOW repository')
     request = urllib.request.Request('https://api.github.com/repos/' + repository + '/releases/latest',
                                      headers={'Accept': 'application/vnd.github+json', 'User-Agent': 'Portal-Plus'})
+    if os.environ.get('GITHUB_TOKEN'):
+        request.add_header('Authorization', 'Bearer ' + os.environ['GITHUB_TOKEN'])
     with urllib.request.urlopen(request, timeout=60) as response:
         raw = response.read(1024 * 1024 + 1)
     if len(raw) > 1024 * 1024:
@@ -235,6 +237,51 @@ def opennow_release(repository):
     if set(assets) != set(expected):
         raise RuntimeError('Missing OpenNOW release assets')
     return tag, assets
+
+
+def opennow_release_or_pinned(repository, pinned):
+    try:
+        return opennow_release(repository)
+    except Exception:
+        print('OpenNOW release lookup unavailable; keeping the pinned release.', file=sys.stderr)
+        return pinned, None
+
+
+def preserve_opennow(portal, current):
+    """Reuse the active public package when release discovery is unavailable."""
+    previous = json.loads((current / 'manifest.json').read_text())
+    path = portal / 'manifest.json'
+    inventory = json.loads(path.read_text())
+    package = portal / 'apps/opennow'
+    if (current / 'apps/opennow').is_dir():
+        # Keep newly supplied dependency notices when the active release predates
+        # their inclusion in the public inventory.
+        notices = {p.relative_to(package).as_posix(): p.read_bytes()
+                   for p in (package / 'licenses').rglob('*') if p.is_file()}
+        if package.exists():
+            shutil.rmtree(package)
+        shutil.copytree(current / 'apps/opennow', package)
+        added = {}
+        for name, data in notices.items():
+            notice = package / name
+            if not notice.exists():
+                notice.parent.mkdir(parents=True, exist_ok=True)
+                notice.write_bytes(data)
+                added['apps/opennow/' + name] = hashlib.sha256(data).hexdigest()
+        installer = portal / 'src/opennow.js'
+        pin = hashlib.sha256((package / 'manifest.json').read_bytes()).hexdigest()
+        code, count = re.subn(r"const HASH\s*=\s*'[a-f0-9]{64}';", "const HASH = '" + pin + "';", installer.read_text())
+        if count != 1:
+            raise RuntimeError('Missing OpenNOW installer pin')
+        installer.write_text(code)
+        inventory['sha256'] = {name: value for name, value in inventory['sha256'].items()
+                               if not name.startswith('apps/opennow/')}
+        inventory['sha256'].update({name: value for name, value in previous['sha256'].items()
+                                    if name.startswith('apps/opennow/')})
+        inventory['sha256'].update(added)
+        inventory['sha256']['src/opennow.js'] = hashlib.sha256(installer.read_bytes()).hexdigest()
+    inventory['opennowRelease'] = previous.get('opennowRelease')
+    path.write_text(json.dumps(inventory, indent=2) + '\n')
 
 
 def download_opennow(repository, tag, assets, destination):
@@ -268,11 +315,15 @@ def sync_main(repository, state, root, botty_repository=None, codex_repository=N
         portal_head = remote_head(repository)
         botty_head = remote_head(botty_repository) if botty_repository else None
         codex_head = codex_remote_head(codex_repository) if codex_repository else None
-        opennow_tag, opennow_assets = opennow_release(opennow_repository) if opennow_repository else (None, None)
+        current = root / 'current'
+        record = read_deploy_record(state / 'last-deploy.json')
+        pinned = record.get('opennowRelease') if record else None
+        if not pinned and (current / 'manifest.json').is_file():
+            pinned = json.loads((current / 'manifest.json').read_text()).get('opennowRelease')
+        opennow_tag, opennow_assets = opennow_release_or_pinned(opennow_repository, pinned) if opennow_repository else (None, None)
         head = (hashlib.sha256((portal_head + (botty_head or '') + (codex_head or '') +
                                (opennow_repository + ':' + opennow_tag if opennow_tag else '')).encode()).hexdigest()[:40]
                 if botty_head or codex_head or opennow_tag else portal_head)
-        current = root / 'current'
         target = releases / ('main-' + head)
         if current_is_release(current, target):
             reconcile_deploy_record(state, head, target)
@@ -336,7 +387,9 @@ def sync_main(repository, state, root, botty_repository=None, codex_repository=N
                 command([sys.executable, str(source / 'scripts/compose-codex.py'),
                          '--root', str(source / 'vps-site'), '--codex', str(delivery / 'package'),
                          '--commit', codex_head])
-            if opennow_tag:
+            if opennow_tag and opennow_assets is None:
+                preserve_opennow(source / 'vps-site', current.resolve())
+            elif opennow_tag:
                 delivery = source / 'opennow'
                 delivery.mkdir()
                 download_opennow(opennow_repository, opennow_tag, opennow_assets, delivery)
@@ -365,7 +418,7 @@ def sync_main(repository, state, root, botty_repository=None, codex_repository=N
                 if (remote_head(repository) != portal_head or
                         botty_head and remote_head(botty_repository) != botty_head or
                         codex_head and codex_remote_head(codex_repository) != codex_head or
-                        opennow_tag and opennow_release(opennow_repository)[0] != opennow_tag):
+                        opennow_tag and opennow_release_or_pinned(opennow_repository, opennow_tag)[0] != opennow_tag):
                     return 'superseded'
                 if target.exists() or target.is_symlink():
                     if not target.is_dir() or target.is_symlink():

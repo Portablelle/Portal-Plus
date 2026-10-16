@@ -17,6 +17,7 @@ MAX_FILE = 64 * 1024 * 1024
 MAX_TOTAL = 256 * 1024 * 1024
 REQUIRED = {'eboot.bin', 'sce_module/libc.prx', 'sce_sys/param.json',
             'sce_sys/icon0.png', 'sce_sys/pic0.dds', 'sce_sys/pic1.dds'}
+LICENSES = ('licenses/libsrtp.txt', 'licenses/usrsctp.txt')
 
 
 def safe_path(name):
@@ -111,6 +112,7 @@ def compose(portal, archive, manifest, sums, tag, repository=REPOSITORY, license
     upstream, contents = verify_delivery(archive, manifest, sums, tag)
     license_text = license_text or upstream_text(repository, tag, 'LICENSE')
     notices = notices or upstream_text(repository, tag, 'THIRD_PARTY_NOTICES.md')
+    licenses = {name: upstream_text(repository, tag, name) for name in LICENSES}
     if 'GNU GENERAL PUBLIC LICENSE' not in license_text or not notices.strip():
         raise ValueError('Missing OpenNOW GPL license or notices')
     spec = importlib.util.spec_from_file_location('portal_manifest', Path(__file__).with_name('portal-manifest.py'))
@@ -139,6 +141,10 @@ def compose(portal, archive, manifest, sums, tag, repository=REPOSITORY, license
             path.write_bytes(data)
         (stage / 'manifest.json').write_bytes(raw)
         (stage / 'LICENSE').write_text(license_text)
+        for name, text in licenses.items():
+            path = stage / name
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(text)
         (stage / 'NOTICE.md').write_text(
             f'OpenNOW-PS5 {tag}, distributed unmodified under the upstream GPL license.\n\n'
             f'Corresponding source and build instructions: https://github.com/{repository}/tree/{tag}\n'

@@ -3,6 +3,9 @@ OpenNOW-PS5 0.2.0, distributed unmodified under the upstream GPL license.
 Corresponding source and build instructions: https://github.com/OpenCloudGaming/OpenNOW-PS5/tree/0.2.0
 Source archive: https://github.com/OpenCloudGaming/OpenNOW-PS5/archive/refs/tags/0.2.0.tar.gz
 
+The complete libsrtp and usrsctp redistribution notices from this tag are included
+in [licenses/libsrtp.txt](licenses/libsrtp.txt) and [licenses/usrsctp.txt](licenses/usrsctp.txt).
+
 # Third-party notices
 
 ## Credits and acknowledgements

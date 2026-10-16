@@ -1,5 +1,5 @@
 import { checkedPath } from './ps5-io.js';
-import { NativeTitleIO } from './native-title-io.js';
+import { NativeTitleIO, NativeTitleTransaction } from './native-title-io.js';
 import { sha256 } from './transmission.js';
 
 export const NATIVE_ROOT = '/data/homebrew/PPSA99082';
@@ -76,58 +76,32 @@ function identity(bytes, version) {
       !/^\d{2}\.\d{3}\.\d{3}$/.test(p.contentVersion)) throw Error('Unrecognized OpenNOW title. Existing files preserved.');
   if (p.contentVersion > version) throw Error('Newer OpenNOW installed; downgrade refused.');
 }
-async function matches(io, root, manifest, digest) {
-  for (const f of manifest.files) {
-    let data;
-    try { data = await io.readFile(root + '/' + f.path, MAX_FILE); }
-    catch (error) {
-      if (error.message === 'File exceeds expected size: ' + root + '/' + f.path) return false;
-      throw error;
-    }
-    if (!data || data.length !== f.size || await digest(data) !== f.sha256) return false;
-  }
-  return true;
-}
 async function save(io, value) {
   await io.writeFile(ROOT + '/update.json', encoder.encode(JSON.stringify(value)));
   await io.syncDirectory(ROOT);
 }
-async function recover(io, journal, manifest, digest) {
-  if (journal.status !== 'pending') return;
-  await io.assertNativeStopped();
-  let target = journal.target === HASH ? manifest : null;
-  if (!target) {
-    const raw = await io.readFile(ROOT + '/' + journal.target + '/manifest.json', 256 * 1024);
-    if (raw && await digest(raw) === journal.target) target = validatePackage(JSON.parse(decoder.decode(raw)));
-  }
-  if (target && await matches(io, NATIVE_ROOT, target, digest)) {
-    await save(io, {...journal, status: 'complete'}); return;
-  }
-  const saved = await io.readFile(journal.backup + '/sce_sys/param.json', 16384);
-  if (journal.previous && !saved) {
-    const current = await io.readFile(NATIVE_ROOT + '/sce_sys/param.json', 16384);
-    // The unchanged original may still have an empty backup reservation.
-    if (current && await digest(current) === journal.previous &&
-        (!await io.exists(journal.backup) || await io.removeEmptyDirectory(journal.backup))) {
-      await save(io, {...journal, status: 'rolled-back'}); return;
-    }
-    throw Error('OpenNOW recovery backup unavailable.');
-  }
-  if (journal.previous && await digest(saved) !== journal.previous)
-    throw Error('OpenNOW recovery backup unavailable.');
-  await io.removeEmptyDirectory(NATIVE_ROOT); // Only an empty interrupted rename reservation.
-  if (await io.exists(NATIVE_ROOT)) {
-    // Retain the failed tree, including when its parameter bytes match the backup.
-    const failed = journal.backup.slice(0, journal.backup.lastIndexOf('/')) + '/failed-PPSA99082';
-    await io.removeEmptyDirectory(failed);
-    await io.moveDirectory(NATIVE_ROOT, failed);
-  }
-  if (journal.previous) await io.moveDirectory(journal.backup, NATIVE_ROOT);
-  await save(io, {...journal, status: 'rolled-back'});
+function transaction(io, digest) {
+  return new NativeTitleTransaction(io, {
+    root: NATIVE_ROOT, stage: STAGE, hash: HASH, limit: MAX_FILE, digest,
+    oversizedMismatch: true, retainFailed: true,
+    save: value => save(io, value),
+    backup: path => io.moveDirectory(NATIVE_ROOT, path),
+    restore: path => io.moveDirectory(path, NATIVE_ROOT),
+    publish: () => io.publish(),
+    backupError: 'OpenNOW recovery backup unavailable.',
+    publicationError: 'OpenNOW publication verification failed.',
+    recoveryError: () => Error('OpenNOW update interrupted. Keep the app closed; restart to recover the retained backup.'),
+    resolveTarget: async (journal, manifest) => {
+      if (journal.target === HASH && manifest) return manifest;
+      const raw = await io.readFile(ROOT + '/' + journal.target + '/manifest.json', 256 * 1024);
+      return raw && await digest(raw) === journal.target ? validatePackage(JSON.parse(decoder.decode(raw))) : null;
+    },
+  });
 }
 
 export async function installOpenNow(io, options = {}) {
   const fetchFile = options.fetchFile || fetch, digest = options.digest || sha256, report = options.report || (() => {});
+  const update = transaction(io, digest);
   report('Checking OpenNOW PS5…');
   const record = await io.readFile(ROOT + '/update.json', 8192);
   if (record) {
@@ -135,7 +109,7 @@ export async function installOpenNow(io, options = {}) {
     if (j.schema !== 1 || !['pending', 'complete', 'rolled-back'].includes(j.status) || !hex(j.target) ||
         (j.previous !== null && !hex(j.previous)) || !/^\/data\/botty\/opennow\/backups\/[a-f0-9]{32}\/PPSA99082$/.test(j.backup))
       throw Error('OpenNOW journal damaged. Existing files preserved.');
-    await recover(io, j, null, digest);
+    await update.recover(j, null);
   }
   const response = await fetchFile('./apps/opennow/manifest.json', { cache: 'no-store' });
   if (!response.ok) throw Error('OpenNOW manifest unavailable.');
@@ -144,46 +118,24 @@ export async function installOpenNow(io, options = {}) {
   const manifest = validatePackage(JSON.parse(decoder.decode(raw)));
   const result = { ready: true, version: manifest.version, consoleTested: manifest.consoleTested,
     reason: 'OpenNOW app files verified. ' + (manifest.consoleTested ? '' : 'Untested prototype. ') + 'Home screen visibility is not confirmed; use the loader refresh procedure if needed.' };
-  if (await matches(io, NATIVE_ROOT, manifest, digest)) return {...result, updated: false};
+  if (await update.matches(NATIVE_ROOT, manifest)) return {...result, updated: false};
   await io.assertNativeStopped();
   const previous = await io.readFile(NATIVE_ROOT + '/sce_sys/param.json', 16384);
   if (previous) identity(previous, manifest.version);
   else if (await io.exists(NATIVE_ROOT)) throw Error('OpenNOW title identity missing. Existing files preserved.');
-  for (const file of manifest.files) {
-    const path = STAGE + '/' + file.path;
-    let data = await io.readFile(path, MAX_FILE);
-    if (data && data.length === file.size && await digest(data) === file.sha256) continue;
-    report('Preparing OpenNOW ' + file.path + '…');
-    const response = await fetchFile('./apps/opennow/' + file.path, { cache: 'no-store' });
-    if (!response.ok) throw Error('OpenNOW download failed.');
-    data = new Uint8Array(await response.arrayBuffer());
-    if (data.length !== file.size || await digest(data) !== file.sha256) throw Error('OpenNOW file verification failed.');
-    await io.mkdirs(path.slice(0, path.lastIndexOf('/')));
-    await io.writeFile(path, data);
-  }
-  if (!await matches(io, STAGE, manifest, digest)) throw Error('OpenNOW disk verification failed.');
+  await update.stage(manifest, fetchFile, {
+    url: './apps/opennow/', report: file => report('Preparing OpenNOW ' + file.path + '…'),
+    downloadError: () => 'OpenNOW download failed.', fileError: () => 'OpenNOW file verification failed.',
+    stageError: 'OpenNOW disk verification failed.',
+  });
   identity(await io.readFile(STAGE + '/sce_sys/param.json', 16384), manifest.version);
   await io.preparePermissions(manifest);
-  await io.assertNativeStopped();
-  const current = await io.readFile(NATIVE_ROOT + '/sce_sys/param.json', 16384);
-  if (current?.toString() !== previous?.toString()) throw Error('OpenNOW title changed during preparation.');
-  const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), x => x.toString(16).padStart(2, '0')).join('');
-  const journal = { schema: 1, status: 'pending', target: HASH, previous: previous ? await digest(previous) : null,
-    backup: ROOT + '/backups/' + id + '/PPSA99082' };
+  await update.assertUnchanged(current => current?.toString() === previous?.toString(), 'OpenNOW title changed during preparation.');
+  const journal = await update.journal(previous, ROOT + '/backups');
   // Persist the pinned manifest before publication so later packages can verify it.
   await io.writeFile(ROOT + '/' + HASH + '/manifest.json', raw);
   await io.syncDirectory(ROOT + '/' + HASH);
   await io.mkdirs(journal.backup.slice(0, journal.backup.lastIndexOf('/')));
-  await save(io, journal);
-  try {
-    if (previous) await io.moveDirectory(NATIVE_ROOT, journal.backup);
-    await io.publish();
-    if (!await matches(io, NATIVE_ROOT, manifest, digest)) throw Error('OpenNOW publication verification failed.');
-    await save(io, {...journal, status: 'complete'});
-  } catch (error) {
-    try { await recover(io, journal, manifest, digest); }
-    catch { throw Error('OpenNOW update interrupted. Keep the app closed; restart to recover the retained backup.'); }
-    throw error;
-  }
+  await update.publish(journal, manifest);
   return {...result, updated: true};
 }
