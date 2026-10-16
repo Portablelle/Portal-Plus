@@ -64,7 +64,7 @@ export function validatePackage(m) {
       !required.every(path => m.files.some(f => f.path === path)) ||
       m.files.some(f => typeof f.path !== 'string' || f.path.length >= 240 ||
         !/^[A-Za-z0-9_.-]+(?:\/[A-Za-z0-9_.-]+)*$/.test(f.path) || f.path.split('/').some(p => p === '.' || p === '..') ||
-        !(required.includes(f.path) || f.path.startsWith('assets/')) || !hex(f.sha256) ||
+        !hex(f.sha256) ||
         !Number.isSafeInteger(f.size) || f.size < 0 || f.size > MAX_FILE) ||
       m.files.reduce((sum, f) => sum + f.size, 0) > 256 * 1024 * 1024)
     throw Error('Unexpected OpenNOW package.');

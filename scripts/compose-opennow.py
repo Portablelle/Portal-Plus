@@ -57,7 +57,7 @@ def verify_delivery(archive, manifest, sums, tag):
             not re.fullmatch(r'[0-9]{2}\.[0-9]{3}\.[0-9]{3}', record['version']) or
             type(record.get('consoleTested')) is not bool or
             not isinstance(files, dict) or not REQUIRED.issubset(files) or len(files) > 512 or
-            any(not safe_path(name) or not (name in REQUIRED or name.startswith('assets/')) or
+            any(not safe_path(name) or
                 not isinstance(value, str) or not re.fullmatch('[a-f0-9]{64}', value)
                 for name, value in files.items())):
         raise ValueError('Invalid OpenNOW manifest')

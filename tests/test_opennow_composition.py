@@ -24,6 +24,8 @@ class OpenNowCompositionTests(unittest.TestCase):
         self.sums = self.root.parent / 'SHA256SUMS'
         self.contents = {name: b'app' for name in compose.REQUIRED}
         self.contents['assets/fonts/licenses/OFL.txt'] = b'license'
+        self.contents['opennow-tile-installer.elf'] = b'tile installer'
+        self.contents['sce_module/extra.prx'] = b'extra module'
         self.contents['sce_sys/param.json'] = json.dumps(dict(
             titleId='PPSA99082', contentId='UP9000-PPSA99082_00-OPENNOWPS5000001',
             contentVersion='00.002.046')).encode()
@@ -59,6 +61,8 @@ class OpenNowCompositionTests(unittest.TestCase):
         self.assertFalse(record['consoleTested'])
         self.assertEqual(record['release'], '0.2.0')
         self.assertEqual({f['path'] for f in record['files']}, set(self.contents))
+        for name, data in self.contents.items():
+            self.assertEqual((self.root / 'apps/opennow' / name).read_bytes(), data)
         self.assertIn('/tree/0.2.0', (self.root / 'apps/opennow/NOTICE.md').read_text())
         self.assertEqual(json.loads((self.root / 'manifest.json').read_text())['opennowRelease'], '0.2.0')
         for name in compose.LICENSES:
@@ -154,6 +158,38 @@ class OpenNowCompositionTests(unittest.TestCase):
                 else:
                     with self.assertRaises(ValueError):
                         self.verify_delivery()
+
+    def test_extra_manifest_files_keep_path_hash_and_inventory_checks(self):
+        for name in ('/absolute', '../escape', 'sce_module/../escape', './extra',
+                     'assets\\extra', 'extra//file'):
+            with self.subTest(name=name):
+                self.contents[name] = b'unsafe'
+                self.package()
+                with self.assertRaisesRegex(ValueError, 'Invalid OpenNOW manifest'):
+                    self.verify_delivery()
+                del self.contents[name]
+        for mutation in ('hash', 'missing', 'required', 'symlink'):
+            with self.subTest(mutation=mutation):
+                self.package()
+                record = json.loads(self.manifest.read_text())
+                name = 'opennow-tile-installer.elf'
+                if mutation == 'hash':
+                    record['files'][name] = '0' * 64
+                elif mutation == 'missing':
+                    record['files']['extra.bin'] = compose.digest(b'missing')
+                elif mutation == 'required':
+                    del record['files']['eboot.bin']
+                else:
+                    with zipfile.ZipFile(self.archive, 'w') as archive:
+                        for path, data in self.contents.items():
+                            entry = zipfile.ZipInfo('PPSA99082/' + path)
+                            entry.create_system = 3
+                            entry.external_attr = ((stat.S_IFLNK if path == name else stat.S_IFREG) | 0o644) << 16
+                            archive.writestr(entry, data)
+                self.manifest.write_text(json.dumps(record))
+                self.refresh_sums()
+                with self.assertRaises(ValueError):
+                    self.verify_delivery()
 
     def test_checked_in_files_match_upstream_inventory(self):
         m = json.loads((ROOT / 'vps-site/apps/opennow/manifest.json').read_text())
