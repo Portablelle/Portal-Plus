@@ -1,5 +1,5 @@
-import { PS5IO, checkedPath } from './ps5-io.js';
-import { NativeIO } from './botty-native.js';
+import { checkedPath } from './ps5-io.js';
+import { NativeTitleIO } from './native-title-io.js';
 import { sha256 } from './transmission.js';
 
 export const NATIVE_ROOT = '/data/homebrew/PPSA99082';
@@ -11,15 +11,13 @@ const encoder = new TextEncoder(), decoder = new TextDecoder();
 const required = ['eboot.bin', 'sce_module/libc.prx', 'sce_sys/param.json', 'sce_sys/icon0.png', 'sce_sys/pic0.dds', 'sce_sys/pic1.dds'];
 const hex = value => typeof value === 'string' && /^[a-f0-9]{64}$/.test(value);
 
-export class OpenNowIO extends PS5IO {
+export class OpenNowIO extends NativeTitleIO {
   checkedPath(path) {
     if (typeof path === 'string' && path.startsWith(NATIVE_ROOT + '/'))
       return checkedPath(ROOT + '/' + path.slice(NATIVE_ROOT.length + 1));
     if (typeof path === 'string' && path.startsWith(ROOT + '/')) return checkedPath(path);
     throw Error('Refusing a path outside OpenNOW storage.');
   }
-  async syncDirectory(path) { return NativeIO.prototype.syncDirectory.call(this, path); }
-  async moveDirectory(source, destination) { return NativeIO.prototype.moveDirectory.call(this, source, destination); }
   async assertNativeStopped() {
     if ((await this.processes()).some(p => /^(eboot(?:\.bin)?|botty.*|opennow.*)$/i.test(p.name)))
       throw Error('Close OpenNOW and other native apps before updating in a new session.');
@@ -91,20 +89,32 @@ async function save(io, value) {
 async function recover(io, journal, manifest, digest) {
   if (journal.status !== 'pending') return;
   await io.assertNativeStopped();
-  if (journal.target === HASH && await matches(io, NATIVE_ROOT, manifest, digest)) {
+  let target = journal.target === HASH ? manifest : null;
+  if (!target) {
+    const raw = await io.readFile(ROOT + '/' + journal.target + '/manifest.json', 256 * 1024);
+    if (raw && await digest(raw) === journal.target) target = validatePackage(JSON.parse(decoder.decode(raw)));
+  }
+  if (target && await matches(io, NATIVE_ROOT, target, digest)) {
     await save(io, {...journal, status: 'complete'}); return;
   }
   const current = await io.readFile(NATIVE_ROOT + '/sce_sys/param.json', 16384);
-  if (current && await digest(current) === journal.previous) {
-    await save(io, {...journal, status: 'rolled-back'}); return;
+  const saved = await io.readFile(journal.backup + '/sce_sys/param.json', 16384);
+  if (journal.previous && !saved) {
+    // With no backup, the original tree was never moved or was already restored.
+    if (!await io.exists(journal.backup) && current && await digest(current) === journal.previous) {
+      await save(io, {...journal, status: 'rolled-back'}); return;
+    }
+    throw Error('OpenNOW recovery backup unavailable.');
   }
-  if (current) throw Error('Unexpected OpenNOW recovery files. Backup retained.');
+  if (journal.previous && await digest(saved) !== journal.previous)
+    throw Error('OpenNOW recovery backup unavailable.');
   await io.removeEmptyNative(); // Only an empty interrupted rename reservation.
-  if (journal.previous) {
-    const saved = await io.readFile(journal.backup + '/sce_sys/param.json', 16384);
-    if (!saved || await digest(saved) !== journal.previous) throw Error('OpenNOW recovery backup unavailable.');
-    await io.moveDirectory(journal.backup, NATIVE_ROOT);
+  if (await io.exists(NATIVE_ROOT)) {
+    // Retain the failed tree, including when its parameter bytes match the backup.
+    const failed = journal.backup.slice(0, journal.backup.lastIndexOf('/')) + '/failed-PPSA99082';
+    await io.moveDirectory(NATIVE_ROOT, failed);
   }
+  if (journal.previous) await io.moveDirectory(journal.backup, NATIVE_ROOT);
   await save(io, {...journal, status: 'rolled-back'});
 }
 
@@ -152,6 +162,9 @@ export async function installOpenNow(io, options = {}) {
   const id = Array.from(crypto.getRandomValues(new Uint8Array(16)), x => x.toString(16).padStart(2, '0')).join('');
   const journal = { schema: 1, status: 'pending', target: HASH, previous: previous ? await digest(previous) : null,
     backup: ROOT + '/backups/' + id + '/PPSA99082' };
+  // Persist the pinned manifest before publication so later packages can verify it.
+  await io.writeFile(ROOT + '/' + HASH + '/manifest.json', raw);
+  await io.syncDirectory(ROOT + '/' + HASH);
   await io.mkdirs(journal.backup.slice(0, journal.backup.lastIndexOf('/')));
   await save(io, journal);
   try {

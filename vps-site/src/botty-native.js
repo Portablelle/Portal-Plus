@@ -1,4 +1,5 @@
-import { PS5IO, checkedPath } from './ps5-io.js';
+import { checkedPath } from './ps5-io.js';
+import { NativeTitleIO } from './native-title-io.js';
 import { sha256 } from './transmission.js';
 import { diagnosticError } from './diagnostics.js';
 
@@ -20,7 +21,7 @@ METADATA_FILES.push('/user/app/PPSA99071/icon0.png');
 METADATA_FILES.push(...METADATA_ROOTS.map(root => root + '/snd0.at9'));
 
 // Only this installer can reach the single native title; service IO stays confined.
-export class NativeIO extends PS5IO {
+export class NativeIO extends NativeTitleIO {
   checkedPath(path) {
     if (METADATA_FILES.includes(path)) return path;
     if (typeof path === 'string' && path.startsWith(NATIVE_ROOT + '/'))
@@ -39,25 +40,6 @@ export class NativeIO extends PS5IO {
     // Process names do not identify the title reliably: fail closed for any eboot.
     if ((await this.processes()).some(p => /^(eboot(?:\.bin)?|botty.*)$/i.test(p.name)))
       throw diagnosticError('NATIVE_APP_RUNNING', 'Close Botty+ and other native apps before updating, then start a new session.', 'A native app is running. Close Botty+ and other native apps before an update in a new session.');
-  }
-  async syncDirectory(path) {
-    const fd = await this.call('open', this.string(path), 0x20000 | 0x100, 0);
-    if (fd < 0) throw Error('Cannot access update directory.');
-    try {
-      if (await this.call('fsync', fd) !== 0) throw Error('Could not flush update directory.');
-    } finally { await this.close(fd); }
-  }
-  async moveDirectory(source, destination) {
-    this.checkedPath(source + '/check'); this.checkedPath(destination + '/check');
-    // Reserve a new empty target; never rename over an existing installation/backup.
-    if (await this.call('mkdir', this.string(destination), 0o755) !== 0)
-      throw Error('Update destination already exists. Existing files were preserved.');
-    if (await this.call('rename', this.string(source), this.string(destination, this.otherPath)) !== 0) {
-      await this.runtime.chain.syscall(137, this.string(destination)); // empty reservation only
-      throw Error('Could not move native title. Recovery will run next session.');
-    }
-    await this.syncDirectory(source.slice(0, source.lastIndexOf('/')));
-    await this.syncDirectory(destination.slice(0, destination.lastIndexOf('/')));
   }
   async backupNative(backup) {
     await this.mkdirs(backup.slice(0, backup.lastIndexOf('/')));

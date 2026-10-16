@@ -86,6 +86,93 @@ test('publication failure restores old app and permits retry', async () => {
   await installOpenNow(f.io,f.options);
   assert.equal(decode(f.disk.get(journal)).status,'complete');
 });
+test('pending completed publication verifies its retained manifest across package changes', async () => {
+  const f = fixture(); f.previous();
+  await installOpenNow(f.io, f.options);
+  const j = decode(f.disk.get(journal));
+  const older = structuredClone(f.m), bytes = encode('published by an older package');
+  const file = older.files.find(f => f.path === 'eboot.bin');
+  file.size = bytes.length; file.sha256 = hash(bytes);
+  const raw = encode(older), target = hash(raw);
+  f.disk.set(NATIVE_ROOT + '/eboot.bin', bytes);
+  f.disk.set('/data/botty/opennow/' + target + '/manifest.json', raw);
+  f.disk.set(journal, encode({...j, status:'pending', target}));
+  f.events.length = 0;
+  const fetch = f.options.fetchFile;
+  f.options.fetchFile = async url => {
+    if (!url.endsWith('/manifest.json')) throw Error('download offline');
+    return fetch(url);
+  };
+  await assert.rejects(installOpenNow(f.io, f.options), /download offline/);
+  assert.equal(decode(f.disk.get(journal)).status, 'complete');
+  assert.deepEqual(f.disk.get(NATIVE_ROOT + '/eboot.bin'), bytes);
+  assert.equal(decode(f.disk.get(j.backup + '/eboot.bin')), 'old');
+  assert.ok(!f.events.some(e => e[0] === 'move'));
+});
+test('failed publication is retained and the full backup restored even with identical parameters', async () => {
+  for (const sameParam of [false, true]) {
+    const f = fixture(); f.previous();
+    if (sameParam) f.disk.set(NATIVE_ROOT + '/sce_sys/param.json',
+      encode({titleId:'PPSA99082', contentId:'UP9000-PPSA99082_00-OPENNOWPS5000001', contentVersion:f.m.version}));
+    const before = new Map([...f.disk].map(([p,b]) => [p, b.slice()]));
+    const publish = f.io.publish;
+    f.io.publish = async () => {
+      await publish();
+      f.disk.set(NATIVE_ROOT + '/eboot.bin', encode('corrupt publication'));
+    };
+    await assert.rejects(installOpenNow(f.io, f.options), /publication verification failed/);
+    const j = decode(f.disk.get(journal));
+    assert.equal(j.status, 'rolled-back');
+    for (const [p,b] of before) assert.deepEqual(f.disk.get(p), b);
+    const failed = j.backup.slice(0, j.backup.lastIndexOf('/')) + '/failed-PPSA99082';
+    assert.equal(decode(f.disk.get(failed + '/eboot.bin')), 'corrupt publication');
+    f.io.publish = publish;
+    await installOpenNow(f.io, f.options);
+    assert.equal(decode(f.disk.get(journal)).status, 'complete');
+  }
+});
+test('legacy pending publication without a retained manifest restores the backup', async () => {
+  for (const retained of [undefined, encode('damaged manifest')]) {
+    const f = fixture(); f.previous();
+    await installOpenNow(f.io, f.options);
+    const j = decode(f.disk.get(journal)), target = 'a'.repeat(64);
+    f.disk.set(journal, encode({...j, status:'pending', target}));
+    if (retained) f.disk.set('/data/botty/opennow/' + target + '/manifest.json', retained);
+    const fetch = f.options.fetchFile;
+    f.options.fetchFile = async url => {
+      if (!url.endsWith('/manifest.json')) throw Error('offline');
+      return fetch(url);
+    };
+    await assert.rejects(installOpenNow(f.io, f.options), /offline/);
+    assert.equal(decode(f.disk.get(journal)).status, 'rolled-back');
+    assert.equal(decode(f.disk.get(NATIVE_ROOT + '/eboot.bin')), 'old');
+  }
+});
+test('rollback resumes after the failed publication was moved aside', async () => {
+  const f = fixture(); f.previous();
+  const publish = f.io.publish, move = f.io.moveDirectory;
+  f.io.publish = async () => { await publish(); f.disk.set(NATIVE_ROOT + '/eboot.bin', encode('corrupt')); };
+  f.io.moveDirectory = async (source, target) => {
+    if (source.includes('/backups/')) throw Error('interrupted restore');
+    return move(source, target);
+  };
+  await assert.rejects(installOpenNow(f.io, f.options), /restart to recover/);
+  assert.equal(decode(f.disk.get(journal)).status, 'pending');
+  assert.equal(await f.io.exists(NATIVE_ROOT), false);
+  f.io.moveDirectory = move; f.io.publish = publish;
+  await installOpenNow(f.io, f.options);
+  assert.equal(decode(f.disk.get(journal)).status, 'complete');
+});
+test('failed first publication is moved aside and permits retry', async () => {
+  const f = fixture(), publish = f.io.publish;
+  f.io.publish = async () => { await publish(); f.disk.set(NATIVE_ROOT + '/eboot.bin', encode('corrupt')); };
+  await assert.rejects(installOpenNow(f.io, f.options), /publication verification failed/);
+  assert.equal(decode(f.disk.get(journal)).status, 'rolled-back');
+  assert.equal(await f.io.exists(NATIVE_ROOT), false);
+  f.io.publish = publish;
+  await installOpenNow(f.io, f.options);
+  assert.equal(decode(f.disk.get(journal)).status, 'complete');
+});
 test('pending backup recovers on the next session', async () => {
   const f = fixture(); f.previous();
   const move = f.io.moveDirectory;
@@ -131,6 +218,15 @@ test('OpenNOW paths stay confined and native process checks never stop apps', as
   for (const path of [NATIVE_ROOT+'/eboot.bin','/data/botty/opennow/update.json']) assert.doesNotThrow(()=>OpenNowIO.prototype.checkedPath(path));
   for (const path of ['/data/homebrew/PPSA99071/eboot.bin',NATIVE_ROOT+'/../other','/data/botty/native/check']) assert.throws(()=>OpenNowIO.prototype.checkedPath(path));
   for(const name of ['eboot','eboot.bin','OpenNOW']) await assert.rejects(OpenNowIO.prototype.assertNativeStopped.call({processes:async()=>[{name}]}),/Close/);
+});
+test('shared native directory moves enforce OpenNOW paths and preserve occupied destinations', async () => {
+  const calls = [], io = Object.create(OpenNowIO.prototype);
+  io.string = path => path;
+  io.call = async name => { calls.push(name); return -1; };
+  await assert.rejects(io.moveDirectory(stage, '/data/homebrew/PPSA99071'), /outside OpenNOW/);
+  assert.deepEqual(calls, []);
+  await assert.rejects(io.moveDirectory(stage, NATIVE_ROOT), /destination already exists/);
+  assert.deepEqual(calls, ['mkdir']);
 });
 test('optional install precedes ShadowMount; deselection performs no app work; failure permits launch', async () => {
   for (const selected of [false,true]) for (const failure of [false,true]) {
