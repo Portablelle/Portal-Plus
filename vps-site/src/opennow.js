@@ -31,6 +31,10 @@ export class OpenNowIO extends NativeTitleIO {
   async removeEmptyNative() {
     return ((await this.runtime.chain.syscall(137, this.string(NATIVE_ROOT))).low | 0) === 0;
   }
+  async removeEmptyBackup(path) {
+    this.checkedPath(path + '/check');
+    return ((await this.runtime.chain.syscall(137, this.string(path))).low | 0) === 0;
+  }
   async preparePermissions(manifest) {
     const directories = new Set([STAGE]);
     for (const file of manifest.files) {
@@ -100,8 +104,9 @@ async function recover(io, journal, manifest, digest) {
   const current = await io.readFile(NATIVE_ROOT + '/sce_sys/param.json', 16384);
   const saved = await io.readFile(journal.backup + '/sce_sys/param.json', 16384);
   if (journal.previous && !saved) {
-    // With no backup, the original tree was never moved or was already restored.
-    if (!await io.exists(journal.backup) && current && await digest(current) === journal.previous) {
+    // The unchanged original may still have an empty backup reservation.
+    if (current && await digest(current) === journal.previous &&
+        (!await io.exists(journal.backup) || await io.removeEmptyBackup(journal.backup))) {
       await save(io, {...journal, status: 'rolled-back'}); return;
     }
     throw Error('OpenNOW recovery backup unavailable.');

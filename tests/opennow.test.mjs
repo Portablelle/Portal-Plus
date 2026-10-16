@@ -86,6 +86,29 @@ test('publication failure restores old app and permits retry', async () => {
   await installOpenNow(f.io,f.options);
   assert.equal(decode(f.disk.get(journal)).status,'complete');
 });
+test('pending empty backup reservation is cleared and the unchanged original permits retry', async () => {
+  const f = fixture(); f.previous();
+  const backup = '/data/botty/opennow/backups/' + 'a'.repeat(32) + '/PPSA99082';
+  f.disk.set(journal, encode({schema:1, status:'pending', target:pin,
+    previous:hash(f.disk.get(NATIVE_ROOT + '/sce_sys/param.json')), backup}));
+  let reserved = true;
+  const exists = f.io.exists, write = f.io.writeFile, statuses = [];
+  f.io.exists = async path => (path === backup && reserved) || await exists(path);
+  f.io.removeEmptyBackup = async path => {
+    assert.equal(path, backup);
+    assert.equal(await exists(path), false);
+    assert.equal(decode(f.disk.get(NATIVE_ROOT + '/eboot.bin')), 'old');
+    reserved = false;
+    return true;
+  };
+  f.io.writeFile = async (path, bytes) => {
+    if (path === journal) statuses.push(decode(bytes).status);
+    await write(path, bytes);
+  };
+  assert.equal((await installOpenNow(f.io, f.options)).updated, true);
+  assert.equal(reserved, false);
+  assert.deepEqual(statuses, ['rolled-back', 'pending', 'complete']);
+});
 test('pending completed publication verifies its retained manifest across package changes', async () => {
   const f = fixture(); f.previous();
   await installOpenNow(f.io, f.options);
