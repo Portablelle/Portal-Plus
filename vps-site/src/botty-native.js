@@ -1,5 +1,7 @@
 import { checkedPath } from './ps5-io.js';
 import { NativeTitleIO, NativeTitleTransaction } from './native-title-io.js';
+import { embeddedRuntimeFiles } from './botty-engine-files.js';
+import { ensureSwitchRuntime } from './botty-switch.js';
 import { sha256 } from './transmission.js';
 import { diagnosticError } from './diagnostics.js';
 
@@ -7,9 +9,15 @@ export const NATIVE_ROOT = '/data/homebrew/PPSA99071';
 const JOURNAL = '/data/botty/native/update.json';
 const BACKUPS = '/data/botty/native/backups';
 // Native executables exceed 16 MiB; keep a bounded allowance for older copies too.
-const MAX_NATIVE_FILE_BYTES = 32 * 1024 * 1024;
-const HASH = 'e241376ea3779994997cb389fed94d050c7360ad87e768fb5954d5ac601c7317';
+const MAX_NATIVE_FILE_BYTES = 128 * 1024 * 1024;
+const HASH = '29fcdef8749a6ea3e5ef7164e5faa3d8e81acd16a4045a2d61166a2bd6dc8363';
 const FILES = ['assets/Manrope-OFL.txt', 'assets/build.txt', 'assets/nebula.rgb', 'assets/courier.rgba', 'assets/extractor.rgba', 'assets/vault.rgba', 'assets/ui-font.bin', 'eboot.bin', 'sce_module/libc.prx', 'sce_sys/icon0.png', 'sce_sys/pic0.dds', 'sce_sys/param.json', 'sce_sys/snd0.at9'];
+
+function enginePath(path) {
+  return path === 'emulation-runtime.json' || (typeof path === 'string' && path.length <= 240 &&
+    /^emulation\/[A-Za-z0-9_./-]+$/.test(path) && !path.includes('..') && !path.split('/').some(part => !part || part === '.') &&
+    !path.endsWith('/') && !path.toLowerCase().includes('keys') && !path.toLowerCase().includes('firmware') && !/\.(nca|nsp|xci)$/i.test(path));
+}
 
 const STAGE = '/data/botty/native/' + HASH + '/PPSA99071';
 const encoder = new TextEncoder();
@@ -96,24 +104,29 @@ export class NativeIO extends NativeTitleIO {
       await this.syncDirectory(root);
     }
   }
-  async prepareNativePermissions(root) {
+  async prepareNativePermissions(root, files) {
+    const directories = new Set([root]);
+    for (const file of files) {
+      const parts = file.split('/'); parts.pop();
+      while (parts.length) { directories.add(root + '/' + parts.join('/')); parts.pop(); }
+    }
     if (root !== STAGE && root !== NATIVE_ROOT) throw Error('Unexpected native permission root.');
     // The native title must be readable/executable from the application sandbox.
-    for (const path of [root, root + '/assets', root + '/sce_module', root + '/sce_sys']) {
+    for (const path of directories) {
       if (((await this.runtime.chain.syscall(15, this.string(path), 0o755)).low | 0) !== 0)
         throw Error('Could not set native directory permissions.');
     }
-    for (const file of FILES) {
+    for (const file of files) {
       // The loader also requires executable permissions on the native runtime.
-      const executable = file === 'eboot.bin' || file === 'sce_module/libc.prx';
+      const executable = file === 'eboot.bin' || file === 'sce_module/libc.prx' || file === 'emulation/eboot.bin' || file === 'emulation/sce_module/libc.prx';
       if (((await this.runtime.chain.syscall(15, this.string(root + '/' + file), executable ? 0o755 : 0o644)).low | 0) !== 0)
         throw Error('Could not set native file permissions.');
     }
-    for (const path of [root + '/assets', root + '/sce_module', root + '/sce_sys', root])
+    for (const path of Array.from(directories).reverse())
       await this.syncDirectory(path);
   }
-  async publishNative() {
-    await this.prepareNativePermissions(STAGE);
+  async publishNative(files) {
+    await this.prepareNativePermissions(STAGE, files);
     await this.call('mkdir', this.string('/data/homebrew'), 0o755);
     const fd = await this.call('open', this.string('/data/homebrew'), 0x20000 | 0x100, 0);
     if (fd < 0) throw Error('Cannot access the homebrew directory.');
@@ -135,12 +148,12 @@ function identity(bytes, targetVersion, reuseNewer = false) {
   return value;
 }
 
-function transaction(io, digest, report) {
+function transaction(io, digest, report, packageFiles) {
   return new NativeTitleTransaction(io, {
     root: NATIVE_ROOT, stage: STAGE, hash: HASH, limit: MAX_NATIVE_FILE_BYTES, digest,
     save: (value, exclusive) => io.writeJournal(value, exclusive),
     backup: path => io.backupNative(path), restore: path => io.restoreNative(path),
-    publish: () => io.publishNative(),
+    publish: () => io.publishNative(packageFiles),
     afterPublish: (manifest, backup) => io.syncRegisteredMetadata(manifest, backup, digest),
     backupError: 'Native recovery backup is unavailable. Existing files were preserved.',
     unexpectedError: 'Native recovery found unexpected title files. Existing files were preserved.',
@@ -151,11 +164,19 @@ function transaction(io, digest, report) {
   });
 }
 
+async function prepareOptionalSwitchRuntime(io, options) {
+  try { await ensureSwitchRuntime(io, options); }
+  catch (error) {
+    if (options.refresh) throw error;
+    const detail = error instanceof Error ? error.message : String(error);
+    options.report('Switch runtime is not ready: ' + detail + ' Botty+ installation will continue. Retry private provisioning to enable emulation.');
+  }
+}
+
 export async function installNative(io, options = {}) {
   const fetchFile = options.fetchFile || fetch;
   const digest = options.digest || sha256;
   const report = options.report || (() => {});
-  const update = transaction(io, digest, report);
   report('Checking Botty+…');
   const response = await fetchFile('./apps/botty-native/manifest.json', { cache: 'no-store' });
   if (!response.ok) throw diagnosticError('PACKAGE_HTTP_ERROR', 'Botty+ manifest unavailable (HTTP ' + response.status + ').');
@@ -164,8 +185,17 @@ export async function installNative(io, options = {}) {
   const manifest = JSON.parse(decoder.decode(bytes));
   if (manifest.schema !== 1 || manifest.titleId !== 'PPSA99071' ||
       !/^\d{2}\.\d{3}\.\d{3}$/.test(manifest.version) ||
-      manifest.files.length !== FILES.length || new Set(manifest.files.map(f => f.path)).size !== FILES.length ||
-      manifest.files.some(f => !FILES.includes(f.path) || !Number.isSafeInteger(f.size) || f.size < 1 || f.size > MAX_NATIVE_FILE_BYTES)) throw Error('Unexpected native package.');
+      !Array.isArray(manifest.files) || manifest.files.length < FILES.length || manifest.files.length > 2048 ||
+      new Set(manifest.files.map(f => f.path)).size !== manifest.files.length ||
+      FILES.some(path => !manifest.files.some(f => f.path === path)) ||
+      manifest.files.some(f => (!FILES.includes(f.path) && !enginePath(f.path)) || !Number.isSafeInteger(f.size) || f.size < 1 || f.size > MAX_NATIVE_FILE_BYTES)) throw Error('Unexpected native package.');
+
+  const embedded = manifest.files.length > FILES.length;
+  if (embedded && embeddedRuntimeFiles.some(path => !manifest.files.some(f => f.path === path)))
+    throw Error('Incomplete embedded Switch engine.');
+  if (manifest.files.reduce((sum, file) => sum + file.size, 0) > 512 * 1024 * 1024) throw Error('Native package exceeds size bound.');
+  const packageFiles = manifest.files.map(f => f.path);
+  const update = transaction(io, digest, report, packageFiles);
 
   const record = await io.readFile(JOURNAL, 8192);
   let journal;
@@ -194,7 +224,8 @@ export async function installNative(io, options = {}) {
   if (installed) {
     if (await update.matches(NATIVE_ROOT, manifest)) {
       // Hashes cannot detect permissions left by an older installer.
-      await io.prepareNativePermissions(NATIVE_ROOT);
+      await io.prepareNativePermissions(NATIVE_ROOT, packageFiles);
+      if (embedded) await prepareOptionalSwitchRuntime(io, {fetchFile, digest, report, refresh: options.refreshSwitchRuntime === true});
       report('Botty+ ' + manifest.version + ' is already installed.');
       return {version: manifest.version, updated: false};
     }
@@ -210,6 +241,9 @@ export async function installNative(io, options = {}) {
     report('Preparing Botty+ update to ' + manifest.version + '…');
   } else report('Installing Botty+ ' + manifest.version + '…');
 
+  // Recovery and newer-version retention above must work without private access.
+  if (embedded) await prepareOptionalSwitchRuntime(io, {fetchFile, digest, report, refresh: options.refreshSwitchRuntime === true});
+
   await update.stage(manifest, fetchFile, {
     url: './apps/botty-native/', verifyWritten: true,
     downloadError: file => 'Native file download failed: ' + file.path,
@@ -221,9 +255,10 @@ export async function installNative(io, options = {}) {
       'Installed title changed during preparation. Existing files were preserved.');
     journal = await update.journal(previous, BACKUPS);
     await update.publish(journal, manifest, !record);
+
     report('Botty+ updated to ' + manifest.version + '. Previous version backed up.');
   } else {
-    await io.publishNative();
+    await io.publishNative(packageFiles);
     report('Botty+ files installed. Preparing home screen discovery…');
   }
   return {version: manifest.version, updated: installed};

@@ -104,6 +104,22 @@ export class PS5IO {
     if (!exclusive && await this.call('rename', this.string(target), this.string(path, this.otherPath)) !== 0)
       throw await this.fileError('Could not commit file: ' + path, 'rename');
   }
+  async publishPrivateDirectory(source, destination) {
+    this.checkedPath(source + '/check'); this.checkedPath(destination + '/check');
+    const input = await this.call('open', this.string(source), 0x20000 | 0x100, 0);
+    if (input < 0) throw Error('Private staging directory is unavailable.');
+    try { if (await this.call('fsync', input) !== 0) throw Error('Could not flush private staging directory.'); }
+    finally { await this.close(input); }
+    // rename(2) atomically publishes a directory and refuses a nonempty target.
+    // It also safely recovers an empty target left before publication.
+    if (await this.call('rename', this.string(source), this.string(destination, this.otherPath)) !== 0)
+      throw Error('Cannot publish private directory; existing files were preserved.');
+    const parent = destination.slice(0, destination.lastIndexOf('/'));
+    const fd = await this.call('open', this.string(parent), 0x20000 | 0x100, 0);
+    if (fd < 0) throw Error('Cannot flush private directory.');
+    try { if (await this.call('fsync', fd) !== 0) throw Error('Could not flush private directory.'); }
+    finally { await this.close(fd); }
+  }
   async processes() {
     const mib = this.pathBuffer;
     new Int32Array(mib.backing.buffer, mib.backing.byteOffset, 4).set([1, 14, 8, 0]);

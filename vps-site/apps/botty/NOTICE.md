@@ -1,4 +1,4 @@
-# Botty service 1.3.5
+# Botty service 1.7.0
 
 Botty is the C++17 background service for **Botty+**. It listens on
 port `8088`, controls the separate rTorrent process over loopback SCGI and manages extraction,
@@ -9,9 +9,70 @@ application is `PPSA99071`.
 Use the repository's root README and `deployment/README.md` for installation.
 The portal's **LAUNCH** action installs/starts the service after preparing the
 native title and rTorrent. The service package lives under
-`/data/botty/manager/1.3.5`; its installed marker is in the parent directory.
-A running service is preserved. The portal stages a newer service in its own
-versioned directory and reports it as pending until the next console restart.
+`/data/botty/manager/1.7.0`; its installed marker is in the parent directory.
+
+## Installation updates
+
+`GET /api/state` retains the `nativeUpdate` key with `scope: "installation"`,
+`updateAvailable`, installed/available native, manager, worker and engine versions,
+a bounded English message, `requested`, `closeRequired` and a status of
+`checking`, `current`, `available`, `waiting`, `installing`, `complete`, `error`
+or `blocked`. Release checks run asynchronously and never download in state
+handlers. `POST /api/native-update/check` accepts `{}` to request another check.
+
+Authenticated `POST /api/native-update` accepts `{}` only after a compatible
+installation update has been verified, including service-only changes. Its HTTP
+202 response is flat JSON containing `apiVersion: 1`, `scope: "installation"`,
+`status: "queued"`, native `version`, `serviceVersion` and a 32-hex `transaction`.
+The request is flushed before acknowledgment; repeated requests acknowledge the
+same transaction.
+The native app may then close normally. The manager waits for extraction,
+transfer, deletion, the complete compression/activation pipeline, a confirmed
+idle worker and all native app processes to exit. Existing work finishes; new
+extraction, compression, transfer and deletion operations are blocked from queue
+acceptance until completion or verified safe failure. Torrent additions are also
+blocked while the update is queued; new preparation is deferred. An independent embedded
+updater durably takes over before retiring the manager. Engine changes pause only
+active torrents, retain their hashes and resume only updater-paused torrents.
+Service replacements are identity-verified before native publication and success.
+
+Updates use only the fixed HTTPS GitHub release source, the manager package CA
+bundle and release-index-anchored SHA-256 hashes. The exact thirteen native files
+are staged, flushed and verified before transactional publication. The Portal-compatible
+native journal and retained backups allow guarded recovery after interruption;
+unexpected files or symlinks are never removed to make recovery succeed.
+Registered metadata refresh is confined to the known Botty+ metadata paths.
+ShadowMount unmount is requested only after native process exit is confirmed,
+and its normal scan follows verified publication and metadata refresh.
+
+Service manifests are staged in immutable version directories, and the gzip
+relay is embedded in the manager so the seven-file Portal package stays compatible.
+The manager must remain below Portal's 16 MiB cached-file read bound. A private
+installation journal records takeover and every uncertain pause/retire/load/resume
+intent; ambiguous outcomes are not repeated. Helper ownership requires current
+boot identity, a live distinct PID and a held updater lock. Safe pre-handoff
+failures release admission only after proving unchanged originals and peers.
+
+The updater checks directory access and ownership before writing. PS5 runtime
+permission acceptance, process-table compatibility, unmount/scan behavior and
+power-loss recovery still require console acceptance; host tests do not prove
+these properties on a PS5. A blocked updater preserves files and requires the
+reported permission, worker or recovery issue to be resolved. App reopening is
+manual; the updater does not launch the native app.
+Legacy worker/botty4 peers lack required process evidence and need Portal bootstrap
+in a deliberately restarted idle console session. The portal itself still stages
+service updates without replacing a running older daemon. Do not run Portal and
+the in-app updater concurrently.
+
+## Dedicated server downloads (1.6.0)
+
+Optional private `remote.json` enables a per-download choice between local rTorrent
+and dedicated qBittorrent, and offers existing PS5 candidates for explicit import. The default remains local. The server torrent
+and PS5 HTTPS import have distinct progress phases; all members must arrive before
+preparation. Local rTorrent jobs remain available. See the
+[bridge deployment guide](../../deployment/botty-remote/README.md).
+Authenticated multifile import to PS5 USB/exFAT passed a synthetic live test.
+Real-game preparation and updated native-interface acceptance remain pending.
 
 ## Capabilities
 
@@ -68,14 +129,30 @@ publishing incomplete output. Progress updates are throttled to four per second,
 with durable checkpoints every ten seconds and immediate phase/terminal writes.
 Saved progress can lag after power loss; it is not a resumable decoder checkpoint.
 
+Service 1.5.2 estimates remaining time from measured progress over a rolling
+60-second window, using the full observed interval during the first minute.
+Torrent, extraction, compression and move ETAs wait for five seconds of
+measurements. On each measurement, the estimator makes the ETA unavailable after
+15 seconds without progress. Move and compression responses also clear the rate
+and ETA when their last update is more than five seconds old. Extraction records
+refresh on progress callbacks, so their last estimate can remain visible until
+the next callback. History resets for a new phase, changed totals, counter rollback
+or a torrent pause/resume; observations more than 30 seconds apart start a new
+measurement interval for all users of the estimator.
+Displayed transfer rates remain independent of the ETA. Estimates cover the
+current phase, not later verification or cleanup work.
+
 Non-solid, unencrypted RAR method versions up to 29 use three independent member
 workers by default. Solid, encrypted and newer formats use the sequential path;
 RAR5 may use UnRAR's internal decoder threads. Each member has a single owner and
 all workers join before terminal publication. Sample benchmarks are not a promise
 of full-archive throughput.
 
-Explore rankings cache for ten minutes and covers for thirty days. Stale rankings
-can display while refreshing; Square requests a refresh. Cover requests accept
+Explore rankings cache for ten minutes and covers for thirty days. Discover
+always fetches fresh results on app launch, even with a recent cache, then
+revalidates on entry, after resume and every minute while open. Expired rankings
+refresh automatically while saved results remain visible; R3 bypasses the cache.
+Cover requests accept
 known result/torrent/job IDs, not arbitrary URLs. Unknown artwork remains a
 placeholder. See `deployment/README.md` for the private configuration contract.
 
@@ -109,15 +186,15 @@ is `build/botty-manager.elf`. From the repository root, package it with:
 
 ```sh
 python3 scripts/package-botty.py
-python3 scripts/portal-manifest.py --release YOUR_RELEASE_LABEL
-python3 scripts/portal-manifest.py --check
+python3 scripts/botty-packages.py --check
 ```
 
 For documentation-only changes, `package-botty.py --source-only` refreshes the
 source archive and notices while retaining the packaged binary and manifest.
 Changing service versions also requires updating its default UI path and the
-portal installer's version constant; keep the installed path and health version
-consistent.
+packaged binary; keep the installed path and health version consistent. Portal+
+reads the verified package contract from Botty+ `main` and owns its installer
+configuration.
 
 ## Validation and operations
 
@@ -319,8 +396,10 @@ reason `BottyBackgroundServices` at startup, then renews it every ten seconds fo
 the manager's whole lifetime. Unlike the diagnostic prototype, there is no
 ten-minute limit. Closing the native Botty+ app leaves this manager running.
 The feature is enabled for the portal's firmware range, 7.00–13.60. The module
-and API are resolved at runtime; missing support or a nonzero response stops
-renewals and exposes `failed` without disabling Botty's other features.
+and API are resolved at runtime. In the updated source, a nonzero response exposes
+`failed` and retries every five seconds; a missing module/API (`-ENOSYS`) stops
+renewals without disabling Botty's other features. Released packages still use
+the previous stop-on-first-error behavior until rebuilt and installed.
 
 `GET /api/rest-mode` and `/api/state.restMode` report
 `supported`, `active`, `status`, `lastResult`, `renewalSeconds`, and `leaseSeconds`.
@@ -328,11 +407,33 @@ renewals and exposes `failed` without disabling Botty's other features.
 API routes retain normal authentication. `supported` means the configured
 firmware range, and `active` means a successful request less than sixty seconds
 old, not an independent power-meter reading or a guarantee of every workload.
-Delayed renewals report `expired`; failed requests disable future renewals for
-that process. Stopping the manager stops and joins the renewal thread; its last
+Delayed renewals report `expired`. The updated source additionally exposes
+`retrying`, `retrySeconds`, attempt/failure counts, `lastSuccessAgeMs`,
+`lastAttemptUnixMs`, `maxRenewalGapMs`, `renewalGaps`, `strategy` and `experimental`.
+Gap measurements compare monotonic and wall clocks; wall-clock adjustments can
+also create a gap, so these are diagnostic observations, not proof of suspension.
+A private `rest-mode.json` snapshot beside the manager state is replaced about
+once a minute and on error/recovery/gap transitions. Collect it before restarting
+the service; its PID and timestamp identify historical evidence, not live health.
+Snapshot errors are logged without disabling renewals. A separate observer thread
+coalesces pending snapshots, so slow storage cannot delay the request thread.
+Shutdown waits for in-flight IPC/observer calls; it cannot forcibly cancel blocked
+system calls. The API reads cached companion status without diagnostic disk I/O.
+The optional [FW 13.00 system companion](../rest-mode-companion/README.md) uses
+an expiring manager control record; it is excluded from production bootstrap and
+requires a deliberate hardware trial. `restMode.companion` reports a recent
+resident heartbeat, not proof of every workload running in standby.
+
+The HTTP listener now rebinds after recognized network-interruption errors,
+including the PS5 E163 error, with one-to-ten-second backoff. The same manager,
+authentication and background jobs remain in memory. This does not repeat client
+commands or relaunch rTorrent. Other fatal listener errors keep the existing
+shutdown behavior.
+Stopping the manager stops and joins the renewal thread; its last
 request expires through the system's observed roughly sixty-second lease.
-No global rest settings, kernel patches, syscall-table toggles or extra network
-listeners are introduced.
+The default manager path introduces no global rest settings, kernel patches,
+syscall-table toggles or extra network listeners. The experimental companion
+performs separate, explicitly gated process/kernel mutations as documented above.
 
 The user-confirmed rest trials on firmware 13.00 kept FTP, rTorrent SCGI and
 Botty HTTP responsive. A private generated 8 MiB torrent downloaded during rest,
@@ -343,7 +444,8 @@ rest sessions and power consumption still need hardware validation. Holding the
 main processor in standby may use more power than the deepest rest mode.
 
 Host regressions cover the firmware boundaries, initial rejection, expired
-requests, renewal over a simulated day, shutdown, and API status. PS5
+requests, renewal over a simulated day, retry recovery, missing API, wall-clock
+gaps, snapshot write failures, shutdown, and API status. PS5
 cross-compilation uses the pinned SDK on the VPS.
 
 The final 1.5.0 manager was installed on firmware 13.00 after live API checks
@@ -354,3 +456,83 @@ Botty and both original torrents remained available, and rest maintenance was
 still active 130 seconds after the activation receipt, beyond one sixty-second
 lease. This establishes production startup and ongoing renewals while awake;
 the standby download/readback evidence above comes from the prototype trials.
+
+For the PS5Tailscale comparison and the limits of manager-hosted renewal, see
+[the rest-mode investigation](../../docs/REST-MODE.md).
+
+### Faster HTTPS imports (1.6.1)
+
+File transfers request a 4 MiB TCP receive window before connecting, falling back
+to 1 MiB or 256 KiB when the kernel refuses a larger socket buffer. The curl
+receive buffer is 256 KiB. A bounded 512 KiB write buffer combines small HTTPS
+callbacks into larger disk writes. Progress counts bytes written, and pause or
+network errors flush the valid tail before retaining the partial file. A process
+crash can discard at most the in-memory tail; resumption still starts at the
+actual file size. Files remain sequential, pinned and verified before publication.
+
+The PS5 baseline was about 4.2 MiB/s on Ethernet to the internal SSD. Host tests
+verify write coalescing, short writes, interruption and Range recovery; they do
+not establish the throughput improvement on PS5. Measure that after installation.
+
+### Parallel HTTPS imports (1.7.0)
+
+Remote imports transfer one file at a time in bounded 8 MiB ranges, using two
+connections by default. POST `/api/remote/import` accepts `parallelConnections`
+with values 1, 2 or 4. To change a paused import without restarting the manager,
+POST `/api/torrent` with its `id`, `action: "resume"` and `parallelConnections`.
+The range ledger is independent of connection count. Fully received ranges
+become resumable only after member-directory entries, file data and registry
+state are durably synced. Sparse
+file length never establishes completion. Space admission accounts for allocated
+uncommitted ranges, so an interrupted copy can overwrite those blocks without
+reserving their space twice; block allocation is never counted as progress. Legacy append-only partials migrate
+after syncing and committing every member prefix together; interrupted new ranges are downloaded again.
+The client verifies status 206, Content-Range and Content-Length before writes.
+HTTP 416 pauses the import for inspection; HTTP 429 keeps admitted completed
+ranges, halves effective concurrency (4 to 2 to 1) and retries after the manager's
+five-second delay. Explicitly setting parallelConnections on resume resets this
+adaptive limit. The bridge retains a global limit of four simultaneous file
+responses across consoles. Four connections can contend with another console.
+
+`scripts/benchmark-remote-ddl.py` prepares/runs the controlled 1/2/4 comparison
+against the same remote member, records elapsed time and MiB/s, and requires
+matching SHA-256 for every downloaded copy. Default invocation prints an offline plan. After explicit approval to install
+1.7.0 and test, `--execute --config <private-json>` uses the manager import API
+and FTP to verify each copy. Connection config contains no credentials; the
+script reads existing console credentials into memory. It refuses existing fixture tracking and removes
+only the new local fixture copies between trials. Results include scheduling,
+file fsync and publication; FTP hash verification is outside the timed interval.
+No PS5 speedup is claimed before those measurements.
+
+Format 2 staging uses `.remote2-<hash>.partial`, distinct from the 1.6.x
+append-only staging path. Owned legacy partials migrate via a durable rename
+intent before any segmented write. Returning to 1.6.x cannot interpret these
+sparse partials as complete prefixes. Pause incomplete imports before a downgrade;
+keep their format 2 directories for resumption with 1.7.0. Older managers can
+start a separate fresh legacy copy, so avoid resuming those records until 1.7.0
+is restored. Preserve both copies if a downgrade was already used.
+
+Staging creation records a durable ownership token before mkdir. A failed
+identity save can therefore recover the matching marker on resume or removal,
+while unrelated directories remain unowned. Legacy migration checks local-file
+sharing under both staging path spellings before renaming any directory.
+
+An interrupted migration still resolves its owned legacy directory until rename
+finishes, including for reference checks and local-only removal. Creation recovery
+repairs only an empty stage or a marker prefix matching its durable token; unknown
+contents and foreign markers are retained for inspection. Typed range ledgers
+validate bounds, count completion, plan gaps and merge checkpoints. A single
+batch outcome reduction prioritizes 416, then 429, then other failures.
+
+Parallel imports require the updated dedicated-server bridge advertising
+`capabilities.boundedRanges`; update/restart it before upgrading the manager to
+1.7.0. An older bridge produces an explicit upgrade error before any local writes.
+Sparse-write format is committed once per attempt. Completed small-file ledgers
+are checkpointed together after 8 MiB or five seconds, and on pause, errors and
+publication. Each recorded range is file-synced first; completed members do not
+force unchanged ledger rewrites. A sudden power loss can retry uncheckpointed
+small-file bytes. Directory entry syncing is reused within each attempt except
+when creating new entries.
+
+Activity rows expose `remoteRetrying` for active, unpaused slot-contention
+backoff. Automation can wait for these retries without parsing diagnostic text.

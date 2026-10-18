@@ -1,0 +1,13 @@
+# Include inside the HTTPS Portal server only, after private provisioning setup.
+# Keep this directory outside every public release root. Create the password file
+# outside Git with htpasswd; do not embed a password or key in the website.
+location ^~ /private/switch/ {
+    if ($scheme != https) { return 403; }
+    auth_basic "Private Switch provisioning";
+    auth_basic_user_file /etc/nginx/botty-switch.htpasswd;
+    alias /var/lib/botty-switch-private/;
+    autoindex off;
+    add_header Cache-Control "private, no-store" always;
+    add_header X-Content-Type-Options nosniff always;
+    limit_except GET { deny all; }
+}
