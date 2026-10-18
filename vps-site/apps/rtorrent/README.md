@@ -51,6 +51,59 @@ rollback. Test torrent data may be removed by its exact known identity and paths
 
 ## Validation status
 
+The package revision is `0.16.24-botty10`; upstream `system.client_version`
+remains `0.16.24`. Each launch publishes private `state/runtime.json` before
+upstream main can start a listener, including supervised launches. Its exact
+fields are `schema: 1`, positive `pid`, `version: "0.16.24-botty10"`, and
+`boot: {seconds, microseconds}` containing the exact `kern.boottime` timeval.
+This revision originates in the running binary, never installed metadata.
+Missing sysctl support, a wrong response size, nonpositive seconds or microseconds
+outside 0..999999 fail startup closed. No kernel writes are performed.
+
+The publisher traverses the absolute state path with directory descriptors and
+`O_NOFOLLOW`, accepts root-owned installer storage or storage owned by the
+payload's real UID, sets the state directory to 0700, and writes a
+bounded JSON record to an exclusive 0600 temporary file with a 128-bit random
+suffix, trying at most eight distinct suffixed names. Stale PID-named temporary files
+and colliding files/symlinks are preserved, not deleted. It checks writes,
+fsyncs the file, atomically renames it and fsyncs the directory. Existing identity
+symlinks/nonregular files and unsafe paths are rejected. Backend consumers must
+compare `pid` with live `system.pid` and both boot fields with the current boot;
+the file alone is not proof that the daemon is running.
+
+On firmware 13.00 the portal creates storage with owner UID 0 while the ELF
+loader runs the payload with real UID 1. Both are trusted owners; other owners
+remain rejected. Identity-publication failures are recorded in `runtime.log`.
+
+The target uses carry-normalized descriptor-relative syscall wrappers rather
+than the SDK's positive-errno libc stubs. SDK v0.43's `sys/syscall.h` defines
+`fstatat=493`, `openat=499`, `renameat=501`, and `unlinkat=503`; the target checks
+these mappings at compile time and declares the syscall-clobbered registers.
+`runtime-version.hpp` defines `BOTTY_RT_RUNTIME_VERSION` as the single compiled
+engine revision; packaging and test expectations use the same value.
+
+The SHA256-pinned upstream archive registers exported `system.pid` (getpid),
+`session.save` (session persistence) and `system.shutdown.normal` (normal
+shutdown). `system.shutdown` is a non-exported redirect, not the RPC name to use.
+
+Run the entry/publisher harness on the VPS (not the local Mac), with the working
+directory set to `homebrew/rtorrent/`:
+
+```sh
+c++ -std=c++20 -Wall -Wextra -Werror tests/runtime-identity-harness.cc -o /tmp/rtorrent-runtime-identity-test
+RT_IDENTITY_HARNESS=/tmp/rtorrent-runtime-identity-test python3 -m unittest discover -s tests -v
+```
+
+The injected sysctl supplies boot values and errors, and the injected state path
+isolates test writes. Tests cover exact fields, atomic replacement/private modes,
+invalid boot responses, unsafe paths/symlinks, positive kernel errno normalization,
+stale temporary files and collisions, and existing default/supervised
+arguments, singleton lock, chdir, log and PID behavior. All nine focused host
+tests passed on the VPS. An optimized production-entry probe containing the real
+boot reader, random generator and carry-normalized wrappers compiled and linked
+against the VPS's Payload SDK. This is not a full rebuilt-daemon or PS5 launch
+acceptance result; runtime acceptance remains pending.
+
 The earlier prototype ran on the PS5 and passed generated single-file and
 multifile integrity checks. It did not establish a performance improvement.
 The production switch was requested without further benchmarks or a test suite;
@@ -69,3 +122,64 @@ sources and versions are pinned in the Dockerfile; their own licenses apply.
 The botty3 config disables the extra full rehash on download completion. Normal
 piece checks and explicit manual verification remain enabled. Botty service 1.3.6
 also applies this setting to an already-running daemon via local RPC.
+
+## Descriptor exhaustion recovery (botty7)
+
+Large multifile torrents could stop before downloading or report
+`Hash check I/O error ... Too many open files`. The process can exhaust its
+actual descriptor allowance before libtorrent reaches the advertised cache
+budget. On `EMFILE`, the storage manager now waits for queued file closes and
+retries; if still exhausted, it evicts one least-recently-used cached file,
+waits for that descriptor to close, and retries once more. Other errors remain
+errors. It never closes peer sockets, raises process/kernel limits, or deletes
+data. Exhaustion with no cached file to reclaim remains a reported failure.
+
+The Linux host regression compiles the patched pinned upstream FileManager,
+SocketFile and asynchronous FdCloseQueue sources, plus the production
+`fd_open_file` body with an injected logger that overwrites errno. The botty8
+patch preserves the failed open error around that logging call. It writes and reads 187 files with
+`RLIMIT_NOFILE=64` while the advertised file cache allows 128. The unpatched
+source must fail with `EMFILE`; the patched source must preserve all contents.
+Missing paths and exhaustion due solely to unrelated descriptors remain errors.
+Run `python3 homebrew/rtorrent/tests/test_file_manager_emfile.py` on Linux with
+Python 3.12+, Clang C++20 and OpenSSL development headers. The compiler
+command in `CXX` supports wrappers and flags (for example `ccache clang++ -O2`). These host checks and the rebuilt
+PS5 package alone do not establish console acceptance. See the botty9
+empty-file regression and console validation below.
+
+
+## Empty-file hash checks after recovery (botty9)
+
+A successful descriptor-exhaustion retry previously left `errno=EMFILE` behind.
+Initial hash checking of an empty or undersized file returns an invalid chunk
+without setting an error, so ChunkList could mistake that stale errno for a new
+I/O failure. The storage manager now restores the incoming errno after a
+successful open; genuine failed opens retain their error. The focused regression
+maps empty files after recovery under `RLIMIT_NOFILE=64`, then writes and reads
+all 187 files. The previous recovery patch fails this empty-file regression;
+botty9 passes it on the VPS Linux host.
+
+The rebuilt botty9 daemon was staged and hash-verified on the PS5, then started
+after a saved session and normal shutdown of botty8. Its runtime revision and
+PID matched live RPC on the same boot; previously active torrents were restored.
+CONTROL passed its initial hash check and began downloading without the I/O
+error, confirmed by live service state and the user. Full download completion
+and complete-data integrity remain unverified.
+
+## Console descriptor headroom
+
+The PS5 default file-cache allocation can retain enough descriptors for a large
+multifile torrent to prevent other services from opening files. Live firmware
+13.00 reproduced `EMFILE` in the browser and ShadowMount's `/dev/lvdctl` open;
+ShadowMount then shut down and native titles could not launch.
+
+The default engine entry point caps the torrent file cache at 64 and applies
+socket allocation before importing the state configuration and opening SCGI.
+It reapplies the allocation after import, before restoring session torrents.
+This also protects in-app updates launched by older managers that retain an
+uncapped `state/rtorrent.rc`; no manager upgrade or Portal+ re-bootstrap is
+required. Explicit supervised launch arguments remain the launcher's responsibility.
+The shipped configuration applies the same cap. The cache rotates
+files as needed; the EMFILE recovery and errno fixes remain in place. This caps
+cached torrent files, not the number of files a torrent may contain. It does not
+claim a separate PS5-wide descriptor reservation or a cap on all peer sockets.

@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Verify, index and export only the public portal files; never local backups."""
+import sys
 import argparse
 import hashlib
 import json
 from pathlib import Path
 import re
 import shutil
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from source_parts import source_names
 
 PUBLIC_FILES = ('index.html', 'portal.css', 'README.md', 'LICENSE')
 PAYLOADS = ('ProsperoMgr.elf', 'elfldr-ps5-1360.elf', 'ftpsrv-ps5.elf',
@@ -42,7 +46,7 @@ def public_files(root):
         prefix = 'apps/' + package + '/'
         manifest = json.loads((root / prefix / 'manifest.json').read_text())
         entries = manifest['files'] + ([manifest['helper']] if 'helper' in manifest else [])
-        names.extend(prefix + name for name in ('manifest.json', *notices))
+        names.extend(prefix + name for name in ('manifest.json', *notices, *source_names(root / 'apps' / package, verify=False)))
         for entry in entries:
             name = entry['path']
             rel = Path(name)
@@ -109,6 +113,7 @@ def verify_packages(root):
         match = re.search(r'const\s+' + constant + r"\s*=\s*'([a-f0-9]{64})'", code)
         if not match or digest(manifest) != match[1]:
             raise ValueError('Installer manifest pin mismatch: ' + package)
+        source_names(base)
         data = json.loads(manifest.read_text())
         if package == 'rtorrent':
             version = rtorrent_version(data)

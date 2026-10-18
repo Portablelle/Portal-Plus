@@ -41,12 +41,19 @@ class CompositionTests(unittest.TestCase):
         manifest = json.loads(path.read_text())
         manifest['id'] = '9.8.7'
         path.write_text(json.dumps(manifest))
+        torrent_path = self.botty / 'packages/rtorrent/manifest.json'
+        torrent_manifest = json.loads(torrent_path.read_text())
+        torrent_manifest['id'] = '0.16.24-botty99'
+        torrent_path.write_text(json.dumps(torrent_manifest))
         self.refresh()
         compose.compose(self.portal, self.botty, 'a' * 40)
         validator.verify(self.portal)
         code = (self.portal / 'src/botty-manager.js').read_text()
         self.assertIn("const VERSION='9.8.7';", code)
         self.assertIn(contract.digest(path), code)
+        torrent_code = (self.portal / 'src/rtorrent.js').read_text()
+        self.assertIn("const VERSION='0.16.24-botty99';", torrent_code)
+        self.assertIn(contract.digest(torrent_path), torrent_code)
         self.assertEqual(json.loads((self.portal / 'manifest.json').read_text())['bottyCommit'], 'a' * 40)
 
     def test_new_rtorrent_version_updates_installer_and_portal_manifest(self):
