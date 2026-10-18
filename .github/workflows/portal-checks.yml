@@ -12,7 +12,8 @@ permissions:
 jobs:
   verify:
     runs-on: [self-hosted, linux, x64, portal-plus-ci]
-    timeout-minutes: 15
+    # Full package integrity and composition checks run on a 2-CPU runner.
+    timeout-minutes: 30
     steps:
       # The runner workspace is memory-backed. Keeping both the Git pack and
       # the extracted engine sources exceeds its 4 GiB limit. Stream the exact
