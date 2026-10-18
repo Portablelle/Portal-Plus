@@ -5,6 +5,7 @@ import shutil
 import tempfile
 import tarfile
 import unittest
+from package_fixture import compact_native_sources
 from test_codex_contract import CodexDeliveryFixture
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -27,9 +28,13 @@ class CodexCompositionTests(CodexDeliveryFixture, unittest.TestCase):
         self.addCleanup(directory.cleanup)
         portal = Path(directory.name) / 'portal'
         for path in validator.public_files(ROOT / 'vps-site') + [ROOT / 'vps-site/manifest.json']:
-            target = portal / path.relative_to(ROOT / 'vps-site')
+            relative = path.relative_to(ROOT / 'vps-site')
+            if relative.parts[:3] == ('apps', 'botty-native', 'source'):
+                continue
+            target = portal / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(path, target)
+        compact_native_sources(portal / 'apps/botty-native')
         path = portal / 'manifest.json'
         record = json.loads(path.read_text())
         record['sha256'] = {file.relative_to(portal).as_posix(): validator.digest(file)

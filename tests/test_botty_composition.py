@@ -4,6 +4,7 @@ from pathlib import Path
 import shutil
 import tempfile
 import unittest
+from package_fixture import compact_native_sources, omit_native_parts
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -27,10 +28,15 @@ class CompositionTests(unittest.TestCase):
         self.base = Path(self.temp.name).resolve()
         self.portal = self.base / 'portal'
         self.botty = self.base / 'botty'
-        # Real packaged artifacts exercise notices, manifests, binaries and pins.
-        shutil.copytree(ROOT / 'vps-site', self.portal)
+        # Keep real runtime artifacts; use small valid split sources for composition.
+        shutil.copytree(ROOT / 'vps-site', self.portal, ignore=omit_native_parts)
+        compact_native_sources(self.portal / 'apps/botty-native')
+        index = json.loads((self.portal / 'manifest.json').read_text())
+        index['sha256'] = {p.relative_to(self.portal).as_posix(): validator.digest(p)
+                           for p in validator.public_files(self.portal)}
+        (self.portal / 'manifest.json').write_text(json.dumps(index))
         for name in contract.PACKAGES:
-            shutil.copytree(ROOT / 'vps-site/apps' / name, self.botty / 'packages' / name)
+            shutil.copytree(self.portal / 'apps' / name, self.botty / 'packages' / name)
         self.refresh()
 
     def refresh(self):
