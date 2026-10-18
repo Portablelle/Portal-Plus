@@ -14,7 +14,16 @@ jobs:
     runs-on: [self-hosted, linux, x64, portal-plus-ci]
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      # The runner workspace is memory-backed. Keeping both the Git pack and
+      # the extracted engine sources exceeds its 4 GiB limit. Stream the exact
+      # event commit once; all package hashes and tests still run below.
+      - name: Export the event commit without a duplicate Git object store
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/tarball/$GITHUB_SHA" |
+            tar -xz --strip-components=1 -C "$GITHUB_WORKSPACE"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
         with:
           node-version: '24'
