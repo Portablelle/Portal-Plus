@@ -95,7 +95,7 @@ test('1.0 service stages deletion and resume update without interrupting its wor
  assert.equal(result.updatePending,true);assert.deepEqual(f.events,[]);
 });
 
-for(const version of ['1.0.1','1.0.2','1.0.3','1.0.4','1.3.0','1.3.1','1.3.2','1.3.3','1.3.4','1.3.5','1.3.6','1.3.7','1.4.0','1.4.1','1.4.2','1.4.3','1.5.0','1.5.1','1.6.0','1.7.0','1.8.0','1.10.0','1.10.1','1.10.2'].filter(version=>version!==currentVersion))test(`previous ${version} service is recognized and updated without stopping its work`, async () => {
+for(const version of ['1.0.1','1.0.2','1.0.3','1.0.4','1.3.0','1.3.1','1.3.2','1.3.3','1.3.4','1.3.5','1.3.6','1.3.7','1.4.0','1.4.1','1.4.2','1.4.3','1.5.0','1.5.1','1.6.0','1.7.0','1.8.0','1.10.0','1.10.1','1.10.2','1.10.3'].filter(version=>version!==currentVersion))test(`previous ${version} service is recognized and updated without stopping its work`, async () => {
  const f=fixture({existingBotty:true,version});
  f.files.set(MANAGER_ROOT+'/installed.json',new TextEncoder().encode(JSON.stringify({app:'Botty',version})));
  assert.equal(await managerInstalled(f.io),true);
