@@ -8,22 +8,22 @@
  #include "sm_gameinfo.h"
  #include "sm_image.h"
  #include "sm_limits.h"
-@@ -483,6 +484,11 @@
+@@ -507,6 +508,11 @@
  
  static int handle_launch_request(const char *title_id) {
    pthread_mutex_lock(&g_service.mutex);
-+  // Also block unmanaged launches while the storage worker owns the gate.
++  // Include unmanaged launches while the Botty worker owns the mutation gate.
 +  if (g_service.external_mutation_in_progress) {
 +    pthread_mutex_unlock(&g_service.mutex);
 +    return EBUSY;
 +  }
+   bool was_busy = launch_preparation_pending_locked();
    g_service.pending_launch_title_id[0] = '\0';
    g_service.pending_sandbox_ready_handled = false;
-   if (is_supported_game_title_id(title_id)) {
-@@ -778,6 +784,36 @@
-                   g_service.outgoing.title_id[0] != '\0';
-   pthread_mutex_unlock(&g_service.mutex);
-   return prepared;
+@@ -972,6 +978,36 @@
+         return true;
+   }
+   return false;
 +}
 +
 +static bool storage_title_allowed_locked(const char *title_id) {
@@ -64,7 +64,7 @@
  #include "sm_platform.h"
  
  #include <arpa/inet.h>
-@@ -621,6 +622,7 @@
+@@ -630,6 +631,7 @@
        !append_json_string(capabilities, "delete_game_source") ||
        !append_json_string(capabilities, "unpack_game_image") ||
        !append_json_string(capabilities, "storage_job_status") ||
@@ -72,7 +72,7 @@
        !append_json_string(capabilities, "storage_job_cancel") ||
        !append_json_string(capabilities, "list_manual_sources") ||
        !append_json_string(capabilities, "add_manual_source") ||
-@@ -2265,6 +2267,16 @@
+@@ -2457,6 +2459,16 @@
        !usb_storage_root_mounted(destination)) {
      return false;
    }
@@ -89,19 +89,21 @@
    for (int i = 0; i < get_scan_path_count(); ++i) {
      char scan_path[MAX_PATH];
      if (!get_scan_path(i, scan_path))
-@@ -2349,9 +2361,8 @@
-                                           const char *title_id,
-                                           size_t *affected_out) {
+@@ -2542,10 +2554,11 @@
+                                           size_t *affected_out,
+                                           const char **error_out) {
    *affected_out = 0;
--  if (runtime_sleep_mode_active() || sm_game_lifecycle_has_active_game() ||
--      sm_install_has_pending_work() ||
--      sm_shellcore_service_has_prepared_mount()) {
-+  if (runtime_sleep_mode_active() || sm_install_has_pending_work() ||
-+      !sm_shellcore_storage_title_allowed(title_id)) {
+-  *error_out = runtime_mutation_block_reason();
++  *error_out = runtime_sleep_mode_active() ? "rest_mode" :
++      sm_install_has_pending_work() ? "install_pending" : NULL;
+   if (*error_out)
+     return EBUSY;
+-  if (sm_shellcore_background_work_blocked()) {
++  if (!sm_shellcore_storage_title_allowed(title_id)) {
+     *error_out = "runtime_prepared";
      return EBUSY;
    }
- 
-@@ -2361,6 +2372,36 @@
+@@ -2561,6 +2574,36 @@
      return ENOMEM;
  
    int status = 0;
@@ -138,7 +140,7 @@
    runtime_mount_state_lock();
    for (size_t i = 0; i < count; ++i) {
      game_source_info_t info;
-@@ -2395,34 +2436,51 @@
+@@ -2600,34 +2643,51 @@
        }
      }
    }
@@ -203,7 +205,7 @@
        }
        continue;
      }
-@@ -2432,11 +2490,19 @@
+@@ -2637,11 +2697,19 @@
                          sizeof(tracked_path)) &&
          strcmp(tracked_path, source) == 0 &&
          !write_mount_link(snapshot[i].title_id, destination)) {
@@ -223,7 +225,7 @@
  }
  
  static const char *storage_job_state_name(storage_job_state_t state) {
-@@ -2722,6 +2788,7 @@
+@@ -2953,6 +3021,7 @@
    } else {
      scanner_mutation = true;
    }
@@ -231,18 +233,18 @@
    if (status == 0 && operation == GAME_STORAGE_UNPACK) {
      const bool read_only = true;
      status = sm_shellcore_mount_title_runtime(title_id, &read_only);
-@@ -2731,7 +2798,9 @@
+@@ -2962,7 +3031,9 @@
      }
    }
    if (status == 0) {
--    if (!sm_shellcore_try_begin_external_mutation())
+-    if (!sm_shellcore_try_begin_external_mutation()) {
 +    if (!(operation == GAME_STORAGE_UNPACK
-+            ? sm_shellcore_try_begin_external_mutation()
-+            : sm_shellcore_try_begin_storage_mutation(title_id)))
++              ? sm_shellcore_try_begin_external_mutation()
++              : sm_shellcore_try_begin_storage_mutation(title_id))) {
        status = EBUSY;
-     else
-       shellcore_mutation = true;
-@@ -2804,6 +2873,18 @@
+       error = "runtime_busy";
+     } else
+@@ -3044,6 +3115,18 @@
      pthread_mutex_unlock(&g_storage_job.mutex);
    }
  
@@ -261,7 +263,7 @@
    if (status == 0) {
      bool renamed = false;
      const char *copy_source = operation == GAME_STORAGE_UNPACK
-@@ -2834,8 +2915,18 @@
+@@ -3073,8 +3156,18 @@
          g_storage_job.processed_files = total_files;
          pthread_mutex_unlock(&g_storage_job.mutex);
        }
@@ -282,26 +284,26 @@
      }
    }
  
-@@ -2884,7 +2975,7 @@
+@@ -3124,7 +3217,7 @@
  static int start_storage_job(const char *title_id,
                               const char *destination_dir,
                               game_storage_operation_t operation,
 -                             bool delete_source,
 +                             bool delete_source, const char *expected_source,
-                              storage_job_snapshot_t *accepted_out) {
-   sm_game_cache_snapshot_entry_t game_entry;
-   if (!find_game_snapshot_by_title(title_id, &game_entry))
-@@ -2895,6 +2986,9 @@
-       !path_exists(source_info.physical_path)) {
-     return ENOENT;
-   }
+                              storage_job_snapshot_t *accepted_out,
+                              const char **error_out) {
+   game_source_info_t source_info;
+@@ -3132,6 +3225,9 @@
+                                       error_out);
+   if (status != 0)
+     return status;
 +  if (expected_source && strcmp(expected_source, source_info.physical_path) != 0)
 +    return ESTALE;
 +  if (strcmp(title_id, "PPSA99071") == 0) return EPERM;
    if (operation == GAME_STORAGE_UNPACK &&
        (!source_info.image_backed || is_data_mounted(title_id) ||
         sm_shellcore_service_title_is_prepared(title_id))) {
-@@ -3103,8 +3197,18 @@
+@@ -3375,9 +3471,19 @@
  
    storage_job_snapshot_t accepted;
    memset(&accepted, 0, sizeof(accepted));
@@ -315,15 +317,16 @@
 +      return;
 +    }
 +  }
+   const char *error = NULL;
    int status = start_storage_job(title_id, destination_dir, operation,
--                                 delete_source, &accepted);
-+                                 delete_source, expected_source, &accepted);
+-                                 delete_source, &accepted, &error);
++                                 delete_source, expected_source, &accepted, &error);
    if (status != 0) {
-     log_debug("  [API] async game source %s start failed: title=%s "
-               "status=%d",
+     if (operation == GAME_STORAGE_DELETE && error &&
+         strcmp(error, "source_missing") == 0) {
 --- a/src/sm_game_lifecycle.c
 +++ b/src/sm_game_lifecycle.c
-@@ -1253,6 +1253,11 @@
+@@ -1362,6 +1362,11 @@
    close_game_lifecycle_wake_pipe();
  }
  
@@ -401,10 +404,10 @@
  bool sm_shellcore_service_start(void);
 --- a/include/sm_game_lifecycle.h
 +++ b/include/sm_game_lifecycle.h
-@@ -3,6 +3,8 @@
- 
+@@ -4,6 +4,8 @@
  #include <stdbool.h>
  #include <stdint.h>
+ #include "sm_limits.h"
 +#include <sys/types.h>
 +pid_t sm_game_lifecycle_storage_pid(void);
  

@@ -63,6 +63,7 @@ static void test_page_pinning(void) {
 }
 
 
+bool should_stop_requested(void) { return false; }
 void log_debug(const char *fmt, ...) { (void)fmt; }
 pid_t find_pid_by_name(const char *name, bool exclude) {
   (void)name; (void)exclude; return current_pid;
@@ -119,20 +120,31 @@ static void reset(bool installed) {
   read_failures=attach_count=write_count=dispatch_count=0;
   fail_attach=fail_detach=fail_patch=corrupt_verify=failed_verify=0;
   wrong_image=conflict_on_attach=bad_rollback=0; current_pid=42;
-  g_hooks.status=SHELLCORE_HOOKS_READY;
+  g_hooks.status=SHELLCORE_HOOKS_READY; g_hooks.enabled=true;
   g_hooks.remote.pid=42; g_hooks.remote.image_base=100;
   g_hooks.remote.offsets=&offsets; g_hooks.hook_count=3;
   g_hooks.bridge_address=1024;
   g_hooks.bridge_size=sm_shellcore_bridge_blob_end-sm_shellcore_bridge_blob_start;
-  assert(g_hooks.bridge_size<=sizeof(g_hooks.expected_bridge));
-  memcpy(g_hooks.expected_bridge,sm_shellcore_bridge_blob_start,g_hooks.bridge_size);
-  memcpy(memory+g_hooks.bridge_address,g_hooks.expected_bridge,g_hooks.bridge_size);
+  for (size_t i=0; i<3; ++i) {
+    shellcore_hook_record_t *hook=&g_hooks.hooks[i];
+    hook->target=(sm_shellcore_target_t)i;
+    hook->original_size=i==1 ? 5 : 16;
+    memset(hook->original,0x90,hook->original_size);
+    g_hooks.remote.targets[i]=4608+i*64;
+  }
+  assert(patch_remote_jump(42,g_hooks.remote.targets[0],
+      remote_bridge_symbol(sm_shellcore_bridge_launch_hook),16));
+  assert(patch_remote_call(42,g_hooks.remote.targets[1],
+      remote_bridge_symbol(sm_shellcore_bridge_sandbox_hook)));
   target=g_hooks.remote.targets[SM_SHELLCORE_TARGET_INSTALL_ALL]=4096;
   g_hooks.hooks[2].target=SM_SHELLCORE_TARGET_INSTALL_ALL;
   g_hooks.hooks[2].original_size=16;
   memset(g_hooks.hooks[2].original,0x90,16);
   memcpy(g_hooks.hooks[2].original,k_expected_function_prologue,4);
   memcpy(memory+target,g_hooks.hooks[2].original,16);
+  uint8_t bridge[SM_SHELLCORE_BRIDGE_MAX_BLOB_SIZE];
+  assert(populate_bridge(&g_hooks,bridge));
+  memcpy(memory+g_hooks.bridge_address,bridge,g_hooks.bridge_size);
   if(installed) assert(patch_remote_jump(42,target,remote_bridge_symbol(sm_shellcore_bridge_install_all_hook),16));
   write_count=0;
 }
@@ -152,8 +164,9 @@ int main(void) {
   test_page_pinning();
   reset(true); assert(install()); assert(attach_count==0 && dispatch_count==1);
   reset(true); read_failures=1; assert(install()); assert(attach_count==0);
-  reset(true); read_failures=2; assert(!install());
-  assert(g_hooks.status==SHELLCORE_HOOKS_READY && write_count==0);
+  reset(true); read_failures=2; fail_attach=1; assert(!install());
+  assert(g_hooks.status==SHELLCORE_HOOKS_STALE && write_count==0);
+  fail_attach=0;
   assert(install()); // No permanent failure after a transient read error.
   reset(false); assert(install()); assert(attach_count==1 && dispatch_count==1);
   assert(g_hooks.status==SHELLCORE_HOOKS_READY);
@@ -162,7 +175,7 @@ int main(void) {
   reset(false); memory[remote_bridge_symbol(sm_shellcore_bridge_install_title_id_0)]=17;
   memory[remote_bridge_symbol(sm_shellcore_bridge_install_dir_0)]=99;
   assert(install()); // Previous request data is intentionally mutable.
-  reset(false); memory[target]=0xcc; assert(!install()); assert(write_count==0 && attach_count==0);
+  reset(false); memory[target]=0xcc; assert(!install()); assert(write_count==0 && attach_count==1);
   reset(false); memory[g_hooks.bridge_address]^=1; assert(!install()); assert(write_count==0);
   reset(false); memory[remote_bridge_symbol(sm_shellcore_bridge_install_armed)]=1;
   assert(!install()); assert(write_count==0);
@@ -180,7 +193,7 @@ int main(void) {
   reset(false); fail_detach=1; assert(!install()); assert(dispatch_count==0);
   assert(g_hooks.status==SHELLCORE_HOOKS_ROLLBACK_PENDING);
   assert(!install()); assert(dispatch_count==0);
-  reset(false); current_pid=43; assert(!install()); assert(write_count==0);
+  reset(false); current_pid=0; assert(!install()); assert(write_count==0);
   reset(false); g_hooks.status=SHELLCORE_HOOKS_ROLLBACK_PENDING;
   assert(!install()); assert(write_count==0);
   reset(false); pthread_t workers[8];

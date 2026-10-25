@@ -23,8 +23,12 @@ shutil.copyfile(source / 'LICENSE', portal / 'shadowmountplus-LICENSE.txt')
 (portal / 'shadowmountplus-NOTICE.md').write_text(
     '# Modified ShadowMountPlus\n\nVersion: ' + meta['version'] + '\n\n'
     'Upstream: ' + meta['upstream'] + ', revision `' + meta['revision'] + '`.\n\n'
-    'Botty modification: guarded automatic TitleDir hook recovery and transient '
-    'read handling; resident ShellCore hook pages; legacy Kstuff runtime toggles disabled for the bundled Lite implementation; guarded background storage operations while Botty+ is active, with progress and moved-image path rebasing. This is not the unmodified upstream release.\n\n'
+    'Botty modifications: bounded transient verification-read retry, deduplicated '
+    'ShellCore page retention and guarded background storage operations while '
+    'Botty+ is active, with expected-source checks, progress and moved-image path '
+    'rebasing. Upstream provides guarded hook recovery and removes legacy Kstuff '
+    'runtime toggles. Kstuff Lite remains v1.11. This is not the unmodified '
+    'upstream release.\n\n'
     'GPL-3.0 license: [license](shadowmountplus-LICENSE.txt). Complete pinned '
     'source, patch, build recipe, tests and SDK stub license: '
     '[corresponding source](shadowmountplus-source.tar.gz).\n')
