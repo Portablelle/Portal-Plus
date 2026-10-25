@@ -1,6 +1,6 @@
 --- a/src/sm_fakelib.c
 +++ b/src/sm_fakelib.c
-@@ -617,6 +617,9 @@
+@@ -868,6 +868,9 @@
        continue;
      }
  
@@ -10,7 +10,7 @@
      char relative_path[MAX_PATH];
      char full_path[MAX_PATH];
      int relative_len =
-@@ -1278,24 +1281,18 @@
+@@ -1535,24 +1538,18 @@
    }
    if (unlink(path) == 0 || errno == ENOENT)
      return true;
@@ -45,7 +45,7 @@
    size_t count = flags & FAKELIB_CACHE_PACKAGE ? 3u : 5u;
 --- a/src/sm_filesystem.c
 +++ b/src/sm_filesystem.c
-@@ -1164,7 +1164,7 @@
+@@ -1171,7 +1171,7 @@
  
  static int copy_dir_impl(const char *src, const char *dst, bool set_mode,
                           mode_t mode, bool overlay, char *buffer,
@@ -54,7 +54,7 @@
    if (mkdir(dst, set_mode ? mode : 0777) != 0) {
      if (errno != EEXIST)
        return -1;
-@@ -1193,6 +1193,8 @@
+@@ -1200,6 +1200,8 @@
      }
      if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, ".."))
        continue;
@@ -63,7 +63,7 @@
      int src_written = snprintf(ss, sizeof(ss), "%s/%s", src, e->d_name);
      int dst_written = snprintf(dd, sizeof(dd), "%s/%s", dst, e->d_name);
      if (src_written < 0 || (size_t)src_written >= sizeof(ss) ||
-@@ -1240,7 +1242,7 @@
+@@ -1247,7 +1249,7 @@
      }
      if (S_ISDIR(st.st_mode)) {
        if (copy_dir_impl(ss, dd, set_mode, mode, overlay, buffer,
@@ -72,7 +72,7 @@
          ret = -1;
          break;
        }
-@@ -1263,13 +1265,14 @@
+@@ -1270,13 +1272,14 @@
  }
  
  static int copy_dir_with_options(const char *src, const char *dst,
@@ -89,7 +89,7 @@
    free(buffer);
    return ret;
  }
-@@ -1283,11 +1286,16 @@
+@@ -1290,11 +1293,16 @@
  }
  
  int copy_dir(const char *src, const char *dst) {

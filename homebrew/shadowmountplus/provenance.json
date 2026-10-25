@@ -1,19 +1,19 @@
 {
   "upstream": "https://github.com/drakmor/ShadowMountPlus",
-  "revision": "98c524890176c7b474fcb03387bec88c4a559861",
-  "version": "1.7beta5-fix1-botty.1",
+  "revision": "0794096dbfd5855d5b757e4708703671400bc9cf",
+  "version": "1.7beta7-botty.1",
   "sdkStubsRevision": "f7fd02e6e195902a449b5e664917be8c01888b34",
   "sdkStubsUpstream": "https://github.com/ps5-payload-dev/sdk",
   "sha256": {
     "vendor/sdk-stubs/LICENSE": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
     "vendor/sdk-stubs/libkernel_sys.c": "bf48b2a70948abbdd01bd8976586c75501836a08943db4f13c2b0ab728b824fa",
-    "vendor/shadowmountplus-98c5248.tar.gz": "b6009671108b0d781506400e9bdccb84c9620401fa804dadebd8d9ddfe78665b"
+    "vendor/shadowmountplus-0794096.tar.gz": "31f05c27987dcaddbb20d3b16b25cf93b1af9c56ad4d441e198a8a145e5f060e"
   },
-  "sourceArchive": "vendor/shadowmountplus-98c5248.tar.gz",
+  "sourceArchive": "vendor/shadowmountplus-0794096.tar.gz",
   "upstreamRelease": {
-    "version": "1.7-beta5fix1",
-    "digest": "sha256:e85fd63b705498488f39c09c9aea6f9fa22e0df2e932865de49a8cedf25172d5",
-    "url": "https://github.com/drakmor/ShadowMountPlus/releases/download/1.7-beta5fix1/shadowmountplus.elf",
-    "published_at": "2026-10-10T18:36:33Z"
+    "version": "1.7beta7",
+    "digest": "sha256:a8f9d7f76e8749912508ade0cd5c78076b5bbf1271813c78c80c3d3d9d4777ee",
+    "url": "https://github.com/drakmor/ShadowMountPlus/releases/download/1.7beta7/shadowmountplus.elf",
+    "published_at": "2026-10-21T11:56:24Z"
   }
 }

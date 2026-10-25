@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unpack verified upstream source and apply Botty's TitleDir recovery patch."""
+"""Unpack verified upstream source and apply Botty compatibility patches."""
 import hashlib
 import json
 from pathlib import Path
