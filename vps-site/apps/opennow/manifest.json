@@ -1,0 +1,216 @@
+{
+  "schema": 1,
+  "app": "OpenNOW-PS5",
+  "titleId": "PPSA99082",
+  "version": "00.002.046",
+  "release": "0.2.0",
+  "upstream": "https://github.com/OpenCloudGaming/OpenNOW-PS5/releases/tag/0.2.0",
+  "consoleTested": false,
+  "files": [
+    {
+      "path": "assets/1080-check.h264",
+      "size": 94665,
+      "sha256": "8af817f031aef66dc29b5b497bb0285cf4af4073912369cb8336b30617f36c77"
+    },
+    {
+      "path": "assets/4k-check.h264",
+      "size": 342849,
+      "sha256": "bf1aae6987300542f8acbf8be29cc82cc90b9bef356fb246f8e8c0da70549012"
+    },
+    {
+      "path": "assets/banner.txt",
+      "size": 18,
+      "sha256": "13368e19cae01d15cc8f25fbb6930e56d9e682728fe600ae079480f09604088c"
+    },
+    {
+      "path": "assets/cacert.pem",
+      "size": 188900,
+      "sha256": "a41b5d356aea97a529fe27e0f7316d2f9d946d75927476cf9cf1b90637d00505"
+    },
+    {
+      "path": "assets/fonts/Nunito-Black.ttf",
+      "size": 38648,
+      "sha256": "b0e841c740e21c00ee8c6ed27f62f76d7b95db49f5b3058539959f85373d04e3"
+    },
+    {
+      "path": "assets/fonts/Nunito-Bold.ttf",
+      "size": 38656,
+      "sha256": "14c1f686a818e27ab42b446bd6cec18252bc804a2b7e5db078bab1f994ac4a95"
+    },
+    {
+      "path": "assets/fonts/Nunito-ExtraBold.ttf",
+      "size": 38668,
+      "sha256": "bc8c2f53753c88811746732156a5bea6e35c729f6c5ba868538166b606a12672"
+    },
+    {
+      "path": "assets/fonts/Nunito-SemiBold.ttf",
+      "size": 38700,
+      "sha256": "4784b14a3c0d0c868b7f053b1787b7b92e4357beca946c14f14fb5db734d504c"
+    },
+    {
+      "path": "assets/fonts/OpenNOWMono-Medium.ttf",
+      "size": 25848,
+      "sha256": "cfbd9a84fe70156acf6621d6b71cd1a1cbbc248e0fdddde6671685ca5aebf76f"
+    },
+    {
+      "path": "assets/fonts/licenses/IBMPlexMono-OFL.txt",
+      "size": 4363,
+      "sha256": "37784b44044a4ffd9256702b7c0982c37e5c8887ba90c6dca0479aea93dc898d"
+    },
+    {
+      "path": "assets/fonts/licenses/Nunito-OFL.txt",
+      "size": 4385,
+      "sha256": "580df76c95a1ec5ab878ceb25bb3d85c6a076804e9c970c8c6972aea775fdf65"
+    },
+    {
+      "path": "assets/hdr-check.hevc",
+      "size": 57608,
+      "sha256": "552924d80e28e4a1caf940b204ee359dddf4ca9b1f84664b342a07de98e76857"
+    },
+    {
+      "path": "assets/licenses/OpenNOW-Android.txt",
+      "size": 1063,
+      "sha256": "5d00339c6bcca47bc7db1412fb3abda80918ee631d7abe7609045754307a97e3"
+    },
+    {
+      "path": "assets/licenses/ps5-opengl/Dear-ImGui.txt",
+      "size": 1083,
+      "sha256": "c80c5789748d955c4a650562baa0d750494e2c7128c2ca66aaebe2e3c4e198bf"
+    },
+    {
+      "path": "assets/licenses/ps5-opengl/LICENSE",
+      "size": 35149,
+      "sha256": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986"
+    },
+    {
+      "path": "assets/licenses/ps5-opengl/Mesa/Apache-2.0",
+      "size": 10045,
+      "sha256": "7e4d3fba250d15e9e0afa380d4b611828fa2560cc8fdebe95bcf2f01a487de12"
+    },
+    {
+      "path": "assets/licenses/ps5-opengl/Mesa/BSL-1.0",
+      "size": 1649,
+      "sha256": "9b9fea7520a816107fcac2598b7c0155222f16bc430e989706b22f4367f1df7d"
+    },
+    {
+      "path": "assets/licenses/ps5-opengl/Mesa/GPL-1.0-or-later",
+      "size": 13047,
+      "sha256": "8ff76f1528e6e4e9400c0f6b1f2d19d4979aaac3bcc44bb707a55389132825c4"
+    },
+    {
+      "path": "assets/licenses/ps5-opengl/Mesa/GPL-2.0-only",
+      "size": 18424,
+      "sha256": "6667ad4063569cd53b13500550d93fcd3dc11bcf82c5514296af013a0b720ba5"
+    },
+    {
+      "path": "assets/licenses/ps5-opengl/Mesa/MIT",
+      "size": 1372,
+      "sha256": "323c587d0ccf10e376f8bf9a7f31fb4ca6078105194b42e0b1e0ee2bc9bde71f"
+    },
+    {
+      "path": "assets/licenses/ps5-opengl/Mesa/SGI-B-2.0",
+      "size": 1822,
+      "sha256": "686bf035a1fd22076416fd3b90370ac67771e884bf57f55693d51f8ce7c710a7"
+    },
+    {
+      "path": "assets/licenses/ps5-opengl/Mesa/exceptions/Linux-Syscall-Note",
+      "size": 1257,
+      "sha256": "9b4084655174654608fd037e9ddb4feeadfada01cd042e9c17b05aa7105b2b9f"
+    },
+    {
+      "path": "assets/licenses/ps5-opengl/NanoVG.txt",
+      "size": 859,
+      "sha256": "d1c46d70e4e62e6324ff845bc8f4831912e33a940a5e7949298250be74ef47aa"
+    },
+    {
+      "path": "assets/licenses/ps5-opengl/OpenGNM-PSBC.txt",
+      "size": 1148,
+      "sha256": "3abdeb196a1a67a5d4379f8b79597342e764eb3e14d1bc4d7784c72c2565300d"
+    },
+    {
+      "path": "assets/licenses/ps5-opengl/OpenGNM.txt",
+      "size": 1077,
+      "sha256": "4ef11e5f2fa4563cc95a209dc9ca4f9322f1cd19bad07082ee90594eda8664c6"
+    },
+    {
+      "path": "assets/licenses/ps5-opengl/SDL2.txt",
+      "size": 878,
+      "sha256": "7826eca0a0f7e591f38dd844e207a200aac81a59b20d8a30c3af8c6282af13e6"
+    },
+    {
+      "path": "assets/licenses/ps5-opengl/SPIRV-Headers.txt",
+      "size": 23503,
+      "sha256": "ea43b1de38a6f90c488800d66dec1ed671e68cda530266bc96951fb5b6307613"
+    },
+    {
+      "path": "assets/licenses/ps5-opengl/Sokol-Samples.txt",
+      "size": 1072,
+      "sha256": "51490332d416ce2bb3a84557c7da7a1a9854c9419b6dbef251bc77d6c995e736"
+    },
+    {
+      "path": "assets/licenses/ps5-opengl/Sokol.txt",
+      "size": 897,
+      "sha256": "72f9367756dba68918b8955092c14503934681862eee33cc16495a02f40025ef"
+    },
+    {
+      "path": "assets/licenses/ps5-opengl/THIRD_PARTY_NOTICES.md",
+      "size": 6558,
+      "sha256": "d9dc49dab17946e41c4ce8e9305607375e39eceaaf4206cdf60c34e628605d78"
+    },
+    {
+      "path": "assets/licenses/ps5-opengl/VK-GL-CTS.txt",
+      "size": 11358,
+      "sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "path": "assets/licenses/ps5-opengl/Vulkan-Headers.txt",
+      "size": 495,
+      "sha256": "95ad366d23fadf701d355bc45fb8b82ae2d700239471d35d41286ac3b08ff903"
+    },
+    {
+      "path": "assets/licenses/ps5-opengl/vecmath.txt",
+      "size": 1110,
+      "sha256": "7c1e700f01750ceb638d511438456a2e957a9e4908655936388b87ad52cfd48a"
+    },
+    {
+      "path": "assets/logo.rgba",
+      "size": 129600,
+      "sha256": "1f6bdcf16b1bf12ffd9b4eb91ebb932fc4fe4f2f102684e0a8092dfafb609749"
+    },
+    {
+      "path": "assets/sdr-main10-check.hevc",
+      "size": 57608,
+      "sha256": "876b8de338e341d38b63e8921fa0fb4cab8ae8fc1b78d300b32752bd7b2f13d9"
+    },
+    {
+      "path": "eboot.bin",
+      "size": 51579154,
+      "sha256": "dc2a01335efc8b4b5b4f3684df35d3724bb0a09873237b48242e4680ae52173e"
+    },
+    {
+      "path": "sce_module/libc.prx",
+      "size": 1284674,
+      "sha256": "e6ff45d16adf687855cc3b33b0c8a4132b6504360b221e0a34c7e99fb3ba0036"
+    },
+    {
+      "path": "sce_sys/icon0.png",
+      "size": 242156,
+      "sha256": "ee5d4644a57840c05ef5b4ab9d05fdcb4964a76d2cc703b8be543324971d388d"
+    },
+    {
+      "path": "sce_sys/param.json",
+      "size": 873,
+      "sha256": "02d70feb0de459bd2fa744709d21896894ef5860add18215b5575225e0ad885a"
+    },
+    {
+      "path": "sce_sys/pic0.dds",
+      "size": 8294548,
+      "sha256": "7fd962cd6715efde7c5148451631b20d6930c17b4c3200b07c7298fa70bb9499"
+    },
+    {
+      "path": "sce_sys/pic1.dds",
+      "size": 8294548,
+      "sha256": "7fd962cd6715efde7c5148451631b20d6930c17b4c3200b07c7298fa70bb9499"
+    }
+  ]
+}

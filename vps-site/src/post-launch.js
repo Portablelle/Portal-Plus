@@ -15,11 +15,12 @@ export function postLaunchInstructions(summary) {
       : unavailable(components.native.state === 'ready' ? components.manager : components.native) });
     if (components.manager?.state === 'update_pending') instructions[instructions.length - 1].text += ' ' + pending;
   }
-  for (const id of ['codex', 'cheatrunner', 'ftp']) {
+  for (const id of ['opennow', 'codex', 'cheatrunner', 'ftp']) {
     const component = components[id];
     if (!component || component.state === 'not_requested') continue;
     let text = unavailable(component);
     if (component.state === 'ready') {
+      if (id === 'opennow') text = 'Press PS to return to the home screen, then open OpenNOW PS5. App visibility is not confirmed; use the loader refresh procedure if needed.';
       if (id === 'codex') text = 'Press PS to return to the home screen. Find Codex PS5 in the game library and open it there; app visibility is not confirmed.';
       if (id === 'cheatrunner') text = 'The service is confirmed ready. Use Open CheatRunner below to access it in this browser; its home-screen tile may not be visible yet.';
       if (id === 'ftp') text = 'FTP is confirmed on port 2121. Use your PS5’s network settings to find its address for your FTP client. The portal server address is not your console address.';

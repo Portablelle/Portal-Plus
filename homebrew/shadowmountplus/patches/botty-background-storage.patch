@@ -284,7 +284,7 @@
      }
    }
  
-@@ -3124,7 +3217,7 @@
+@@ -3124,12 +3217,21 @@
  static int start_storage_job(const char *title_id,
                               const char *destination_dir,
                               game_storage_operation_t operation,
@@ -292,18 +292,22 @@
 +                             bool delete_source, const char *expected_source,
                               storage_job_snapshot_t *accepted_out,
                               const char **error_out) {
++  if (strcmp(title_id, "PPSA99071") == 0) return EPERM;
    game_source_info_t source_info;
-@@ -3132,6 +3225,9 @@
+   int status = resolve_storage_source(title_id, operation, &source_info,
                                        error_out);
++  // A missing source still has a resolved path. Check the caller's precondition
++  // before allowing the handler to reconcile a missing-source deletion.
++  if (expected_source &&
++      (status == 0 || (*error_out && strcmp(*error_out, "source_missing") == 0)) &&
++      strcmp(expected_source, source_info.physical_path) != 0) {
++    *error_out = NULL;
++    return ESTALE;
++  }
    if (status != 0)
      return status;
-+  if (expected_source && strcmp(expected_source, source_info.physical_path) != 0)
-+    return ESTALE;
-+  if (strcmp(title_id, "PPSA99071") == 0) return EPERM;
    if (operation == GAME_STORAGE_UNPACK &&
-       (!source_info.image_backed || is_data_mounted(title_id) ||
-        sm_shellcore_service_title_is_prepared(title_id))) {
-@@ -3375,9 +3471,19 @@
+@@ -3375,9 +3477,19 @@
  
    storage_job_snapshot_t accepted;
    memset(&accepted, 0, sizeof(accepted));

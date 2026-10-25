@@ -1,4 +1,7 @@
-import { PS5IO, checkedPath } from './ps5-io.js';
+import { checkedPath } from './ps5-io.js';
+import { NativeTitleIO, NativeTitleTransaction } from './native-title-io.js';
+import { embeddedRuntimeFiles } from './botty-engine-files.js';
+import { ensureSwitchRuntime } from './botty-switch.js';
 import { sha256 } from './transmission.js';
 import { diagnosticError } from './diagnostics.js';
 
@@ -6,9 +9,15 @@ export const NATIVE_ROOT = '/data/homebrew/PPSA99071';
 const JOURNAL = '/data/botty/native/update.json';
 const BACKUPS = '/data/botty/native/backups';
 // Native executables exceed 16 MiB; keep a bounded allowance for older copies too.
-const MAX_NATIVE_FILE_BYTES = 32 * 1024 * 1024;
-const HASH = 'e241376ea3779994997cb389fed94d050c7360ad87e768fb5954d5ac601c7317';
+const MAX_NATIVE_FILE_BYTES = 128 * 1024 * 1024;
+const HASH = '29fcdef8749a6ea3e5ef7164e5faa3d8e81acd16a4045a2d61166a2bd6dc8363';
 const FILES = ['assets/Manrope-OFL.txt', 'assets/build.txt', 'assets/nebula.rgb', 'assets/courier.rgba', 'assets/extractor.rgba', 'assets/vault.rgba', 'assets/ui-font.bin', 'eboot.bin', 'sce_module/libc.prx', 'sce_sys/icon0.png', 'sce_sys/pic0.dds', 'sce_sys/param.json', 'sce_sys/snd0.at9'];
+
+function enginePath(path) {
+  return path === 'emulation-runtime.json' || (typeof path === 'string' && path.length <= 240 &&
+    /^emulation\/[A-Za-z0-9_./-]+$/.test(path) && !path.includes('..') && !path.split('/').some(part => !part || part === '.') &&
+    !path.endsWith('/') && !path.toLowerCase().includes('keys') && !path.toLowerCase().includes('firmware') && !/\.(nca|nsp|xci)$/i.test(path));
+}
 
 const STAGE = '/data/botty/native/' + HASH + '/PPSA99071';
 const encoder = new TextEncoder();
@@ -20,7 +29,7 @@ METADATA_FILES.push('/user/app/PPSA99071/icon0.png');
 METADATA_FILES.push(...METADATA_ROOTS.map(root => root + '/snd0.at9'));
 
 // Only this installer can reach the single native title; service IO stays confined.
-export class NativeIO extends PS5IO {
+export class NativeIO extends NativeTitleIO {
   checkedPath(path) {
     if (METADATA_FILES.includes(path)) return path;
     if (typeof path === 'string' && path.startsWith(NATIVE_ROOT + '/'))
@@ -39,25 +48,6 @@ export class NativeIO extends PS5IO {
     // Process names do not identify the title reliably: fail closed for any eboot.
     if ((await this.processes()).some(p => /^(eboot(?:\.bin)?|botty.*)$/i.test(p.name)))
       throw diagnosticError('NATIVE_APP_RUNNING', 'Close Botty+ and other native apps before updating, then start a new session.', 'A native app is running. Close Botty+ and other native apps before an update in a new session.');
-  }
-  async syncDirectory(path) {
-    const fd = await this.call('open', this.string(path), 0x20000 | 0x100, 0);
-    if (fd < 0) throw Error('Cannot access update directory.');
-    try {
-      if (await this.call('fsync', fd) !== 0) throw Error('Could not flush update directory.');
-    } finally { await this.close(fd); }
-  }
-  async moveDirectory(source, destination) {
-    this.checkedPath(source + '/check'); this.checkedPath(destination + '/check');
-    // Reserve a new empty target; never rename over an existing installation/backup.
-    if (await this.call('mkdir', this.string(destination), 0o755) !== 0)
-      throw Error('Update destination already exists. Existing files were preserved.');
-    if (await this.call('rename', this.string(source), this.string(destination, this.otherPath)) !== 0) {
-      await this.runtime.chain.syscall(137, this.string(destination)); // empty reservation only
-      throw Error('Could not move native title. Recovery will run next session.');
-    }
-    await this.syncDirectory(source.slice(0, source.lastIndexOf('/')));
-    await this.syncDirectory(destination.slice(0, destination.lastIndexOf('/')));
   }
   async backupNative(backup) {
     await this.mkdirs(backup.slice(0, backup.lastIndexOf('/')));
@@ -114,24 +104,29 @@ export class NativeIO extends PS5IO {
       await this.syncDirectory(root);
     }
   }
-  async prepareNativePermissions(root) {
+  async prepareNativePermissions(root, files) {
+    const directories = new Set([root]);
+    for (const file of files) {
+      const parts = file.split('/'); parts.pop();
+      while (parts.length) { directories.add(root + '/' + parts.join('/')); parts.pop(); }
+    }
     if (root !== STAGE && root !== NATIVE_ROOT) throw Error('Unexpected native permission root.');
     // The native title must be readable/executable from the application sandbox.
-    for (const path of [root, root + '/assets', root + '/sce_module', root + '/sce_sys']) {
+    for (const path of directories) {
       if (((await this.runtime.chain.syscall(15, this.string(path), 0o755)).low | 0) !== 0)
         throw Error('Could not set native directory permissions.');
     }
-    for (const file of FILES) {
+    for (const file of files) {
       // The loader also requires executable permissions on the native runtime.
-      const executable = file === 'eboot.bin' || file === 'sce_module/libc.prx';
+      const executable = file === 'eboot.bin' || file === 'sce_module/libc.prx' || file === 'emulation/eboot.bin' || file === 'emulation/sce_module/libc.prx';
       if (((await this.runtime.chain.syscall(15, this.string(root + '/' + file), executable ? 0o755 : 0o644)).low | 0) !== 0)
         throw Error('Could not set native file permissions.');
     }
-    for (const path of [root + '/assets', root + '/sce_module', root + '/sce_sys', root])
+    for (const path of Array.from(directories).reverse())
       await this.syncDirectory(path);
   }
-  async publishNative() {
-    await this.prepareNativePermissions(STAGE);
+  async publishNative(files) {
+    await this.prepareNativePermissions(STAGE, files);
     await this.call('mkdir', this.string('/data/homebrew'), 0o755);
     const fd = await this.call('open', this.string('/data/homebrew'), 0x20000 | 0x100, 0);
     if (fd < 0) throw Error('Cannot access the homebrew directory.');
@@ -153,35 +148,29 @@ function identity(bytes, targetVersion, reuseNewer = false) {
   return value;
 }
 
-async function matches(io, root, manifest, digest) {
-  for (const file of manifest.files) {
-    const bytes = await io.readFile(root + '/' + file.path, MAX_NATIVE_FILE_BYTES);
-    if (!bytes || bytes.length !== file.size || await digest(bytes) !== file.sha256) return false;
-  }
-  return true;
+function transaction(io, digest, report, packageFiles) {
+  return new NativeTitleTransaction(io, {
+    root: NATIVE_ROOT, stage: STAGE, hash: HASH, limit: MAX_NATIVE_FILE_BYTES, digest,
+    save: (value, exclusive) => io.writeJournal(value, exclusive),
+    backup: path => io.backupNative(path), restore: path => io.restoreNative(path),
+    publish: () => io.publishNative(packageFiles),
+    afterPublish: (manifest, backup) => io.syncRegisteredMetadata(manifest, backup, digest),
+    backupError: 'Native recovery backup is unavailable. Existing files were preserved.',
+    unexpectedError: 'Native recovery found unexpected title files. Existing files were preserved.',
+    publicationError: 'Published native title verification failed.',
+    recoveryError: () => diagnosticError('NATIVE_RECOVERY_REQUIRED', 'Botty+ update interrupted. Backup retained; restart to recover before opening the app.', 'Native title publication or recovery is incomplete. Keep Botty+ closed. Restart your PS5 before a new session can recover the retained backup.'),
+    recoveryVerified: () => report('Previous Botty+ update verified. Backup retained.'),
+    recoveryRestored: () => report('Previous Botty+ restored after an interrupted update.'),
+  });
 }
 
-async function recover(io, journal, manifest, digest, report) {
-  if (journal.status !== 'pending') return;
-  if (journal.target === HASH && await matches(io, NATIVE_ROOT, manifest, digest)) {
-    await io.syncRegisteredMetadata(manifest, journal.backup, digest);
-    await io.writeJournal({...journal, status: 'complete'});
-    report('Previous Botty+ update verified. Backup retained.');
-    return;
+async function prepareOptionalSwitchRuntime(io, options) {
+  try { await ensureSwitchRuntime(io, options); }
+  catch (error) {
+    if (options.refresh) throw error;
+    const detail = error instanceof Error ? error.message : String(error);
+    options.report('Switch runtime is not ready: ' + detail + ' Botty+ installation will continue. Retry private provisioning to enable emulation.');
   }
-  const current = await io.readFile(NATIVE_ROOT + '/sce_sys/param.json', 16384);
-  if (current && await digest(current) === journal.previous) {
-    await io.writeJournal({...journal, status: 'rolled-back'});
-    return; // The original tree was never moved, or was already restored.
-  }
-  const saved = await io.readFile(journal.backup + '/sce_sys/param.json', 16384);
-  if (!saved || await digest(saved) !== journal.previous)
-    throw Error('Native recovery backup is unavailable. Existing files were preserved.');
-  if (current) throw Error('Native recovery found unexpected title files. Existing files were preserved.');
-  await io.assertNativeStopped();
-  await io.restoreNative(journal.backup);
-  await io.writeJournal({...journal, status: 'rolled-back'});
-  report('Previous Botty+ restored after an interrupted update.');
 }
 
 export async function installNative(io, options = {}) {
@@ -196,8 +185,17 @@ export async function installNative(io, options = {}) {
   const manifest = JSON.parse(decoder.decode(bytes));
   if (manifest.schema !== 1 || manifest.titleId !== 'PPSA99071' ||
       !/^\d{2}\.\d{3}\.\d{3}$/.test(manifest.version) ||
-      manifest.files.length !== FILES.length || new Set(manifest.files.map(f => f.path)).size !== FILES.length ||
-      manifest.files.some(f => !FILES.includes(f.path) || !Number.isSafeInteger(f.size) || f.size < 1 || f.size > MAX_NATIVE_FILE_BYTES)) throw Error('Unexpected native package.');
+      !Array.isArray(manifest.files) || manifest.files.length < FILES.length || manifest.files.length > 2048 ||
+      new Set(manifest.files.map(f => f.path)).size !== manifest.files.length ||
+      FILES.some(path => !manifest.files.some(f => f.path === path)) ||
+      manifest.files.some(f => (!FILES.includes(f.path) && !enginePath(f.path)) || !Number.isSafeInteger(f.size) || f.size < 1 || f.size > MAX_NATIVE_FILE_BYTES)) throw Error('Unexpected native package.');
+
+  const embedded = manifest.files.length > FILES.length;
+  if (embedded && embeddedRuntimeFiles.some(path => !manifest.files.some(f => f.path === path)))
+    throw Error('Incomplete embedded Switch engine.');
+  if (manifest.files.reduce((sum, file) => sum + file.size, 0) > 512 * 1024 * 1024) throw Error('Native package exceeds size bound.');
+  const packageFiles = manifest.files.map(f => f.path);
+  const update = transaction(io, digest, report, packageFiles);
 
   const record = await io.readFile(JOURNAL, 8192);
   let journal;
@@ -213,20 +211,21 @@ export async function installNative(io, options = {}) {
         !/^[a-f0-9]{64}$/.test(journal.target) || !/^[a-f0-9]{64}$/.test(journal.previous) ||
         (!legacyComplete && !/^\/data\/botty\/native\/backups\/[a-f0-9]{32}\/PPSA99071$/.test(journal.backup)))
       throw Error('Native update journal is damaged. Existing files were preserved.');
-    await recover(io, journal, manifest, digest, report);
+    await update.recover(journal, manifest);
   }
   let installed = await io.nativeExists();
   // A power loss during first publication may leave only an empty reservation.
   if (installed && !await io.readFile(NATIVE_ROOT + '/sce_sys/param.json', 16384) &&
-      await matches(io, STAGE, manifest, digest)) {
+      await update.matches(STAGE, manifest)) {
     await io.assertNativeStopped();
     if (await io.removeEmptyNative()) installed = false;
   }
   let previous;
   if (installed) {
-    if (await matches(io, NATIVE_ROOT, manifest, digest)) {
+    if (await update.matches(NATIVE_ROOT, manifest)) {
       // Hashes cannot detect permissions left by an older installer.
-      await io.prepareNativePermissions(NATIVE_ROOT);
+      await io.prepareNativePermissions(NATIVE_ROOT, packageFiles);
+      if (embedded) await prepareOptionalSwitchRuntime(io, {fetchFile, digest, report, refresh: options.refreshSwitchRuntime === true});
       report('Botty+ ' + manifest.version + ' is already installed.');
       return {version: manifest.version, updated: false};
     }
@@ -242,45 +241,24 @@ export async function installNative(io, options = {}) {
     report('Preparing Botty+ update to ' + manifest.version + '…');
   } else report('Installing Botty+ ' + manifest.version + '…');
 
-  for (const file of manifest.files) {
-    const path = STAGE + '/' + file.path;
-    let data = await io.readFile(path, MAX_NATIVE_FILE_BYTES);
-    if (data && data.length === file.size && await digest(data) === file.sha256) continue;
-    const result = await fetchFile('./apps/botty-native/' + file.path, { cache: 'no-store' });
-    if (!result.ok) throw Error('Native file download failed: ' + file.path);
-    data = new Uint8Array(await result.arrayBuffer());
-    if (data.length !== file.size || await digest(data) !== file.sha256) throw Error('Native file verification failed: ' + file.path);
-    await io.mkdirs(path.slice(0, path.lastIndexOf('/')));
-    await io.writeFile(path, data);
-    const disk = await io.readFile(path, file.size);
-    if (!disk || await digest(disk) !== file.sha256) throw Error('Native installation verification failed.');
-  }
-  if (!await matches(io, STAGE, manifest, digest)) throw Error('Native staging verification failed.');
+  // Recovery and newer-version retention above must work without private access.
+  if (embedded) await prepareOptionalSwitchRuntime(io, {fetchFile, digest, report, refresh: options.refreshSwitchRuntime === true});
+
+  await update.stage(manifest, fetchFile, {
+    url: './apps/botty-native/', verifyWritten: true,
+    downloadError: file => 'Native file download failed: ' + file.path,
+    fileError: file => 'Native file verification failed: ' + file.path,
+    writeError: 'Native installation verification failed.', stageError: 'Native staging verification failed.',
+  });
   if (installed) {
-    await io.assertNativeStopped();
-    const current = await io.readFile(NATIVE_ROOT + '/sce_sys/param.json', 16384);
-    if (!current || await digest(current) !== await digest(previous))
-      throw Error('Installed title changed during preparation. Existing files were preserved.');
-    const random = crypto.getRandomValues(new Uint8Array(16));
-    const id = Array.from(random, x => x.toString(16).padStart(2, '0')).join('');
-    journal = {schema: 1, status: 'pending', target: HASH, previous: await digest(previous),
-      backup: BACKUPS + '/' + id + '/PPSA99071'};
-    await io.writeJournal(journal, !record);
-    try {
-      await io.backupNative(journal.backup);
-      await io.publishNative();
-      if (!await matches(io, NATIVE_ROOT, manifest, digest)) throw Error('Published native title verification failed.');
-      await io.syncRegisteredMetadata(manifest, journal.backup, digest);
-      await io.writeJournal({...journal, status: 'complete'});
-    } catch (error) {
-      // Restore only if the live path is absent/empty; never delete uncertain content.
-      try { await recover(io, journal, manifest, digest, report); }
-      catch (_) { throw diagnosticError('NATIVE_RECOVERY_REQUIRED', 'Botty+ update interrupted. Backup retained; restart to recover before opening the app.', 'Native title publication or recovery is incomplete. Keep Botty+ closed. Restart your PS5 before a new session can recover the retained backup.'); }
-      throw error;
-    }
+    await update.assertUnchanged(async current => current && await digest(current) === await digest(previous),
+      'Installed title changed during preparation. Existing files were preserved.');
+    journal = await update.journal(previous, BACKUPS);
+    await update.publish(journal, manifest, !record);
+
     report('Botty+ updated to ' + manifest.version + '. Previous version backed up.');
   } else {
-    await io.publishNative();
+    await io.publishNative(packageFiles);
     report('Botty+ files installed. Preparing home screen discovery…');
   }
   return {version: manifest.version, updated: installed};

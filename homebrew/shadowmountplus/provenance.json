@@ -8,5 +8,12 @@
     "vendor/sdk-stubs/LICENSE": "3972dc9744f6499f0f9b2dbf76696f2ae7ad8af9b23dde66d6af86c9dfb36986",
     "vendor/sdk-stubs/libkernel_sys.c": "bf48b2a70948abbdd01bd8976586c75501836a08943db4f13c2b0ab728b824fa",
     "vendor/shadowmountplus-0794096.tar.gz": "31f05c27987dcaddbb20d3b16b25cf93b1af9c56ad4d441e198a8a145e5f060e"
+  },
+  "sourceArchive": "vendor/shadowmountplus-0794096.tar.gz",
+  "upstreamRelease": {
+    "version": "1.7beta7",
+    "digest": "sha256:a8f9d7f76e8749912508ade0cd5c78076b5bbf1271813c78c80c3d3d9d4777ee",
+    "url": "https://github.com/drakmor/ShadowMountPlus/releases/download/1.7beta7/shadowmountplus.elf",
+    "published_at": "2026-10-21T11:56:24Z"
   }
 }

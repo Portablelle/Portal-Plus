@@ -11,3 +11,5 @@ ${CC:-cc} -std=gnu11 -Wall -Wextra -Werror -Itests/stubs -Ibuild/include tests/t
 ./build/test-storage-copy
 ${CC:-cc} -std=c11 -Wall -Wextra -Werror -Ibuild/include tests/test_image_rebase.c -o build/test-image-rebase
 ./build/test-image-rebase
+
+python3 tests/test_fakelib_cache.py

@@ -80,8 +80,7 @@ upload, extraction, compression and other firmwares remain unvalidated on hardwa
 If an older service is running, LAUNCH stages 1.5.1 without stopping its work;
 start a fresh console session and LAUNCH to activate it.
 
-Native 01.004.000 and rTorrent 0.16.24-botty4 retain their existing versions.
-ShadowMountPlus is now 1.7beta7-botty.1; Kstuff Lite remains v1.11. Existing Transmission installations need an
+Native 01.004.000 and rTorrent 0.16.24-botty4 retain their existing versions. ShadowMountPlus is now 1.7beta7-botty.1. Existing Transmission installations need an
 explicit migration before rTorrent can start; keep original metadata and downloads.
 The separate artwork service must also be updated to obtain the blank-cover fix.
 
@@ -128,10 +127,8 @@ object pool mismatch. The kernel stage combines an address leak with an
 Upstream revision is recorded in `manifest.json` and in the repository's
 `Relapse-Exploit` submodule. Preserve the upstream `LICENSE` and attribution.
 
-The bundled ShadowMountPlus `1.7beta7-botty.1` combines upstream guarded hook
-recovery and sandbox/USB fixes with Botty's bounded read retry, deduplicated
-page retention and guarded background storage contract. Hardware acceptance
-of this version remains pending. Its [notice](payloads/shadowmountplus-NOTICE.md),
+The bundled ShadowMountPlus `1.7beta7-botty.1` includes Botty's guarded TitleDir
+recovery, pinned ShellCore hooks and guarded background storage operations while Botty+ is active, alongside upstream beta7 hook recovery, sandbox ownership, HTTP recovery and external-storage fixes. This version still needs console acceptance with the bundled Kstuff Lite. Its [notice](payloads/shadowmountplus-NOTICE.md),
 [GPL license](payloads/shadowmountplus-LICENSE.txt) and
 [complete corresponding source](payloads/shadowmountplus-source.tar.gz)
 are included in this portal.

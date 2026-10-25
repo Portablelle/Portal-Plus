@@ -11,7 +11,7 @@
     {
       "file": "shadowmountplus.elf",
       "version": "1.7beta7-botty.1",
-      "digest": "sha256:e574be824b16c3879dc2b18948ae5fcd509a1bf98a56067325e7fe1729e86fe6",
+      "digest": "sha256:615f0d48722d7eb1d3b554656666b17233e2e7d1fb146e202267992a1fa99362",
       "upstream_version": "1.7beta7",
       "upstream_digest": "sha256:a8f9d7f76e8749912508ade0cd5c78076b5bbf1271813c78c80c3d3d9d4777ee",
       "upstream_url": "https://github.com/drakmor/ShadowMountPlus/releases/download/1.7beta7/shadowmountplus.elf",

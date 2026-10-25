@@ -14,16 +14,18 @@ Lite-control guard or duplicating the old TitleDir recovery implementation.
 
 The retained Botty patches are:
 
-- `title-dir-recovery.patch`: retry a failed verification read once. Upstream
-  refresh retains recoverable state and validates bridge code, imports,
-  trampolines and the disarmed request flag before repairing original hook bytes.
-  Foreign patches and unresolved rollback/detach failures still block dispatch.
-- `pin-shellcore-hooks.patch`: deduplicate the 16 KiB pages covering hook sites
-  and the bridge before using upstream's remote `mlock` service. A failed pin
-  aborts installation; locks remain for ShellCore's lifetime.
+- `shellcore-hooks.patch`: bounded hook-check retry, validation against the saved
+  installed bridge bytes and all resolved targets before recovery, and
+  deduplicated 16 KiB hook/bridge page retention. Foreign patches, armed requests
+  and unresolved rollback/detach failures block dispatch. A changed ShellCore PID
+  remains eligible for upstream reinstallation.
 - `botty-background-storage.patch`: preserve `botty_background_storage_v1`, the
-  optional absolute `expected_source` request field (mismatches return ESTALE),
-  job identities/progress, exact compressor destinations and moved image links.
+  optional absolute `expected_source` request field (mismatches return ESTALE,
+  including missing-source deletions), job identities/progress, exact compressor
+  destinations and moved image links.
+- `fakelib-readonly-cache.patch`: preserve main's filtered-cache fallback when
+  source cleanup is denied on read-only media. Exclude root libkernel before
+  signature traversal/copy; refuse unfiltered overlays if the cache is unavailable.
 
 The storage worker holds scanner and ShellCore mutation gates for the entire
 operation, including unmanaged launch rejection. While an application is active,
@@ -67,11 +69,11 @@ recipe and tests are included in the distributed source archive.
 ## Validation
 
 On 2026-10-25, a fresh prepare applied all three patches with zero fuzz on the
-dedicated host. Production-code TitleDir regressions (24 serial calls plus
+dedicated host. Production-code TitleDir regressions (29 serial calls plus
 eight concurrent calls), page-pinning cases, storage policy, cross-volume
 copy/source-preservation and image-rebase tests passed. The PS5 SDK v0.43
-cross-build succeeded on `dedie`. Portal regressions passed: 263 JavaScript
-tests and 65 Python tests. The distributed portal manifest is checked after
+cross-build succeeded on `dedie`. After merging current Portal+ main, regressions passed: 337 JavaScript
+tests and 94 Python tests. Production fakelib-cache regressions also passed. The distributed portal manifest is checked after
 packaging. These checks do not establish console acceptance.
 
 The host regressions exercise production hook code and bridge assembly against

@@ -8,6 +8,7 @@ export function launchSteps(selected) {
     ['jailbreak', 'Jailbreak', true],
     ['io', 'Console I/O', true],
     ['native', 'Botty+ app files', services.botty],
+    ...(services.opennow ? [['opennow', 'OpenNOW PS5 app files', true]] : []),
     ['kstuff', 'Send Kstuff', true],
     ['kstuff-wait', 'Kstuff startup allowance · 10 seconds', true],
     ['ppr', 'Send A53 PPR', services.ppr],
