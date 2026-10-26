@@ -12,6 +12,8 @@ import { sendPayload } from '../vps-site/src/payload-sender.js';
 import { renderSessionResult } from '../vps-site/src/session-result.js';
 import { renderPostLaunch } from '../vps-site/src/post-launch.js';
 import { bindLaunchProgress, progressReporter } from '../vps-site/src/launch-progress.js';
+import { SessionLog, SessionLogIO } from '../vps-site/src/session-log.js';
+import { prepareFileDiagnostics, inspectFileAccess, formatAccess, accessTrace } from '../vps-site/src/file-diagnostics.js';
 
 const firmwareSource = await readFile(new URL('../vps-site/src/firmware.js', import.meta.url), 'utf8');
 const siteSource = (await readFile(new URL('../vps-site/src/site.js', import.meta.url), 'utf8')).replace(/^import .*;\s*$/gm, '').replace('import("./relapse_exploit.js")', 'loadKernelModule()');
@@ -102,8 +104,9 @@ test('private native startup output is not copied into the browser log',async()=
   const error=Object.assign(diagnosticError('SERVICE_NOT_READY','unlabelled private credential'),{logMessage:'Native output remains in the private startup.log.'});
   const view=screen('PlayStation 5/13.00',()=>atStage('Botty+ manager installation / startup',()=>{throw error;}));
   await view.elements.get('launch').listeners.click();
-  assert.match(view.elements.get('console').lastElementChild.textContent,/private startup.log/);
-  assert.doesNotMatch(view.elements.get('console').lastElementChild.textContent,/credential/);
+  const log=view.elements.get('console').children.map(line=>line.textContent).join('\n');
+  assert.match(log,/private startup.log/);
+  assert.doesNotMatch(log,/credential/);
 });
 test('logs redact credentials while retaining technical context', () => {
   const line=safeLog('HTTP 401 https://user:private@host/path password="private" token=private Authorization: Bearer private');
@@ -161,7 +164,7 @@ function screen(agent, launch, overrides = {}) {
     requestAnimationFrame:callback=>callback(),setTimeout:callback=>callback(),
     bindLaunchOptions:()=>({lock:()=>({codex:true})}),launchSession:launch,
     cheatRunnerStatus,codexStatus,atStage,diagnosticError,failureStatus,safeLog,
-    renderSessionResult,renderPostLaunch,bindLaunchProgress,progressReporter,...overrides};
+    renderSessionResult,renderPostLaunch,bindLaunchProgress,progressReporter,SessionLog,SessionLogIO,prepareFileDiagnostics,inspectFileAccess,formatAccess,accessTrace,...overrides};
   vm.runInNewContext(firmwareSource,context);
   vm.runInNewContext(siteSource,context);
   return {elements,document,context};
@@ -190,7 +193,7 @@ test('critical screen stops once, identifies stage and logs technical detail',as
   assert.equal(view.elements.get('launch').disabled,true);
   assert.equal(view.document.body.dataset.state,'error');
   assert.match(view.elements.get('status').textContent,/Kernel exploit failed/);
-  assert.match(view.elements.get('console').lastElementChild.textContent,/technical probe failed/);
+  assert.ok(view.elements.get('console').children.some(line=>/technical probe failed/.test(line.textContent)));
 });
 test('optional screen remains READY and presents both failed components without restarting',async()=>{
   const view=screen('PlayStation 5/13.00',({report})=>launchSession(options({
@@ -206,4 +209,104 @@ test('optional screen remains READY and presents both failed components without 
   assert.match(status,/CheatRunner is unavailable/);assert.match(status,/Codex PS5 is unavailable/);
   assert.doesNotMatch(status,/Restart|private|tile failure/);
   assert.doesNotMatch(view.elements.get('console').lastElementChild.textContent,/private/);
+});
+
+test('screen saves the final failure detail outside Botty storage before returning',async()=>{
+  const files=new Map();
+  const io={mkdirs:async()=>{},writeFile:async(path,bytes)=>files.set(path,new TextDecoder().decode(bytes))};
+  const view=screen('PlayStation 5/13.00',async({onIO,saveLog,report})=>{
+    await onIO({runtime:{p:{},chain:{}}});
+    report('Starting Botty service');
+    await saveLog();
+    throw Object.assign(Error('Cannot access directory: /data/botty token=private'),{stage:'Botty+ manager installation / startup'});
+  },{SessionLogIO:class {constructor(){return io;}}});
+  await view.elements.get('launch').listeners.click();
+  assert.equal(files.size,1);
+  const [[path,log]]=files;
+  assert.match(path,/^\/data\/portal-plus\/logs\/session-.*\.log$/);
+  assert.match(log,/Starting Botty service/);
+  assert.match(log,/Botty\+ manager installation \/ startup.*Cannot access directory: \/data\/botty/);
+  assert.doesNotMatch(log,/private/);
+  assert.equal(view.document.body.dataset.state,'error');
+});
+
+test('failure is saved before broken result panels render and retains its original status',async()=>{
+  const files=new Map(),renders=[];
+  const io={mkdirs:async()=>{},writeFile:async(path,bytes)=>files.set(path,new TextDecoder().decode(bytes))};
+  const failedRender=name=>()=>{
+    assert.match([...files.values()][0],/Cannot access directory: \/data\/botty/);
+    renders.push(name);throw Error(name+' display unavailable token=private');
+  };
+  const view=screen('PlayStation 5/13.00',async({onIO})=>{
+    await onIO({runtime:{p:{},chain:{}}});
+    throw Object.assign(Error('Cannot access directory: /data/botty'),{
+      stage:'Botty+ manager installation / startup',sessionResult:{outcome:'blocked',components:{}},
+    });
+  },{SessionLogIO:class {constructor(){return io;}},renderSessionResult:failedRender('results'),renderPostLaunch:failedRender('next steps')});
+  await view.elements.get('launch').listeners.click();
+  const log=[...files.values()][0];
+  assert.match(log,/Cannot access directory: \/data\/botty/);
+  assert.match(log,/RESULT_RENDER_FAILED.*results/);
+  assert.match(log,/RESULT_RENDER_FAILED.*next steps/);
+  assert.doesNotMatch(log,/private/);
+  assert.deepEqual(renders,['results','next steps']);
+  assert.match(view.elements.get('status').textContent,/Botty\+ manager installation \/ startup failed/);
+  assert.match(view.elements.get('status').textContent,/Cannot access directory: \/data\/botty/);
+  assert.equal(view.document.body.dataset.state,'error');
+  assert.equal(view.elements.get('launch').attributes['aria-busy'],'false');
+  assert.match(view.elements.get('console').textContent,/Cannot access directory: \/data\/botty/);
+});
+
+test('broken log DOM does not abort launch or prevent the final error file',async()=>{
+  let view;const files=new Map();
+  const io={mkdirs:async()=>{},writeFile:async(path,bytes)=>files.set(path,new TextDecoder().decode(bytes))};
+  view=screen('PlayStation 5/13.00',async({onIO,report})=>{
+    await onIO({runtime:{p:{},chain:{}}});
+    view.elements.get('console').appendChild=()=>{throw Error('DOM unavailable');};
+    report('Preparing Botty service');
+    throw Object.assign(Error('Cannot access directory: /data/botty'),{stage:'Botty+ manager installation / startup'});
+  },{SessionLogIO:class {constructor(){return io;}}});
+  await view.elements.get('launch').listeners.click();
+  const log=[...files.values()][0];
+  assert.match(log,/Preparing Botty service/);
+  assert.match(log,/LOG_RENDER_FAILED.*DOM unavailable/);
+  assert.match(log,/Cannot access directory: \/data\/botty/);
+  assert.match(view.elements.get('console').textContent,/Cannot access directory: \/data\/botty/);
+  assert.equal(view.elements.get('launch').textContent,'STOPPED');
+  assert.equal(view.elements.get('launch').attributes['aria-busy'],'false');
+});
+
+test('successful setup remains ready when result rendering fails',async()=>{
+  const files=new Map();
+  const io={mkdirs:async()=>{},writeFile:async(path,bytes)=>files.set(path,new TextDecoder().decode(bytes))};
+  const view=screen('PlayStation 5/13.00',async({onIO})=>{
+    await onIO({runtime:{p:{},chain:{}}});return {summary:{outcome:'complete',components:{}},cheatrunner:{ready:false},codex:{ready:false}};
+  },{SessionLogIO:class {constructor(){return io;}},renderSessionResult:()=>{throw Error('Results unavailable');}});
+  await view.elements.get('launch').listeners.click();
+  assert.equal(view.document.body.dataset.state,'ready');
+  assert.match(view.elements.get('status').textContent,/Session complete/);
+  const log=[...files.values()][0];
+  assert.match(log,/Session complete/);
+  assert.match(log,/RESULT_RENDER_FAILED.*Results unavailable/);
+  assert.doesNotMatch(log,/Session setup.*STEP_FAILED/);
+});
+
+test('file errno and rights remain visible in status when disk logging fails',async()=>{
+  let writes=0;
+  const io={mkdirs:async()=>{},writeFile:async()=>{
+    if(writes++)throw Error('Cannot create file: session.log.part [open errno=13 (EACCES) uid=1000 euid=1000 sandbox=1]');
+  }};
+  const runtime={p:{},chain:{},fileDiagnostics:{errnoStatus:'available',errnoPointer:null,
+    initial:{label:'Console I/O ready',uid:0,euid:0,sandbox:0},
+    latest:{label:'after rtorrent',uid:1000,euid:1000,sandbox:1},changes:[],accessUnavailable:'Worker unavailable'}};
+  const view=screen('PlayStation 5/13.00',async({onIO})=>{
+    await onIO({runtime});
+    throw Object.assign(Error('Cannot access directory: /data/botty [open errno=13 (EACCES)]'),{stage:'Botty+ manager installation / startup'});
+  },{SessionLogIO:class {constructor(){return io;}}});
+  await view.elements.get('launch').listeners.click();
+  const status=view.elements.get('status').textContent;
+  assert.match(status,/errno=13 \(EACCES\)/);
+  assert.match(status,/Console I\/O ready: uid=0/);
+  assert.match(status,/after rtorrent: uid=1000/);
+  assert.match(status,/Console log saving failed/);
 });

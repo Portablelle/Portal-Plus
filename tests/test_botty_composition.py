@@ -4,6 +4,7 @@ from pathlib import Path
 import shutil
 import tempfile
 import unittest
+from package_fixture import compact_native_sources, omit_native_parts
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -27,10 +28,15 @@ class CompositionTests(unittest.TestCase):
         self.base = Path(self.temp.name).resolve()
         self.portal = self.base / 'portal'
         self.botty = self.base / 'botty'
-        # Real packaged artifacts exercise notices, manifests, binaries and pins.
-        shutil.copytree(ROOT / 'vps-site', self.portal)
+        # Keep real runtime artifacts; use small valid split sources for composition.
+        shutil.copytree(ROOT / 'vps-site', self.portal, ignore=omit_native_parts)
+        compact_native_sources(self.portal / 'apps/botty-native')
+        index = json.loads((self.portal / 'manifest.json').read_text())
+        index['sha256'] = {p.relative_to(self.portal).as_posix(): validator.digest(p)
+                           for p in validator.public_files(self.portal)}
+        (self.portal / 'manifest.json').write_text(json.dumps(index))
         for name in contract.PACKAGES:
-            shutil.copytree(ROOT / 'vps-site/apps' / name, self.botty / 'packages' / name)
+            shutil.copytree(self.portal / 'apps' / name, self.botty / 'packages' / name)
         self.refresh()
 
     def refresh(self):
@@ -41,13 +47,52 @@ class CompositionTests(unittest.TestCase):
         manifest = json.loads(path.read_text())
         manifest['id'] = '9.8.7'
         path.write_text(json.dumps(manifest))
+        torrent_path = self.botty / 'packages/rtorrent/manifest.json'
+        torrent_manifest = json.loads(torrent_path.read_text())
+        torrent_manifest['id'] = '0.16.24-botty99'
+        torrent_path.write_text(json.dumps(torrent_manifest))
         self.refresh()
         compose.compose(self.portal, self.botty, 'a' * 40)
         validator.verify(self.portal)
         code = (self.portal / 'src/botty-manager.js').read_text()
         self.assertIn("const VERSION='9.8.7';", code)
         self.assertIn(contract.digest(path), code)
+        torrent_code = (self.portal / 'src/rtorrent.js').read_text()
+        self.assertIn("const VERSION='0.16.24-botty99';", torrent_code)
+        self.assertIn(contract.digest(torrent_path), torrent_code)
         self.assertEqual(json.loads((self.portal / 'manifest.json').read_text())['bottyCommit'], 'a' * 40)
+
+    def test_new_rtorrent_version_updates_installer_and_portal_manifest(self):
+        path = self.botty / 'packages/rtorrent/manifest.json'
+        manifest = json.loads(path.read_text())
+        manifest['id'] = '0.16.24-botty5'
+        path.write_text(json.dumps(manifest))
+        self.refresh()
+        installer = self.portal / 'src/rtorrent.js'
+        comment = "// const VERSION='0.16.24-botty4';\n"
+        installer.write_text(comment + installer.read_text())
+        portal_manifest = self.portal / 'manifest.json'
+        index = json.loads(portal_manifest.read_text())
+        index['sha256']['src/rtorrent.js'] = validator.digest(installer)
+        portal_manifest.write_text(json.dumps(index))
+        compose.compose(self.portal, self.botty)
+        validator.verify(self.portal)
+        code = (self.portal / 'src/rtorrent.js').read_text()
+        self.assertIn("const VERSION='0.16.24-botty5';", code)
+        self.assertTrue(code.startswith(comment))
+        self.assertIn(contract.digest(path), code)
+
+    def test_invalid_rtorrent_version_keeps_original_portal_untouched(self):
+        path = self.botty / 'packages/rtorrent/manifest.json'
+        manifest = json.loads(path.read_text())
+        manifest['id'] = '../state'
+        path.write_text(json.dumps(manifest))
+        self.refresh()
+        before = (self.portal / 'apps/rtorrent/manifest.json').read_bytes()
+        with self.assertRaisesRegex(ValueError, 'Invalid rTorrent version'):
+            compose.compose(self.portal, self.botty)
+        self.assertEqual((self.portal / 'apps/rtorrent/manifest.json').read_bytes(), before)
+        validator.verify(self.portal)
 
     def test_corrupt_delivery_keeps_original_portal_untouched(self):
         before = (self.portal / 'manifest.json').read_bytes()

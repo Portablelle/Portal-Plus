@@ -8,16 +8,17 @@ export function launchSteps(selected) {
     ['jailbreak', 'Jailbreak', true],
     ['io', 'Console I/O', true],
     ['native', 'Botty+ app files', services.botty],
+    ...(services.opennow ? [['opennow', 'OpenNOW PS5 app files', true]] : []),
     ['kstuff', 'Send Kstuff', true],
     ['kstuff-wait', 'Kstuff startup allowance · 10 seconds', true],
     ['ppr', 'Send A53 PPR', services.ppr],
     ['ppr-confirm', 'A53 PPR confirmation', services.ppr],
     ['shadowmount', 'Send ShadowMountPlus', true],
     ['ftp', 'FTP', services.ftp],
-    ['rtorrent', 'rTorrent', services.rtorrent || services.botty],
     ['manager', 'Botty+ service', services.botty],
     ['cheatrunner', 'CheatRunner', services.cheatrunner],
     ['codex', 'Codex PS5', services.codex],
+    ['rtorrent', 'rTorrent', services.rtorrent || services.botty],
   ].map(([id, label, enabled]) => ({ id, label, state: enabled ? 'pending' : 'skipped', detail: enabled ? '' : 'Not selected.' }));
 }
 

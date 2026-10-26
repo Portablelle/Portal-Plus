@@ -21,6 +21,7 @@ def compose(portal, botty, commit=None):
     record = contract.verify(botty / 'packages')
     # Verify the original portal before replacing any pinned package.
     validator.verify(portal)
+    rtorrent_version = validator.rtorrent_version(json.loads((botty / 'packages/rtorrent/manifest.json').read_text()))
     for package in contract.PACKAGES:
         target = portal / 'apps' / package
         if target.exists():
@@ -37,12 +38,16 @@ def compose(portal, botty, commit=None):
         if count != 1:
             raise ValueError('Missing installer pin: ' + installer)
         if package == 'botty':
-            version = json.loads((portal / 'apps/botty/manifest.json').read_text())['id']
-            if not re.fullmatch(r'[0-9]+(?:\.[0-9]+){2}', version):
+            version = json.loads((portal / 'apps' / package / 'manifest.json').read_text())['id']
+            pattern = r'[0-9]+(?:\.[0-9]+){2}' + (r'-botty[0-9]+' if package == 'rtorrent' else '')
+            if not re.fullmatch(pattern, version):
                 raise ValueError('Invalid service version')
-            code, count = re.subn(r"const VERSION\s*=\s*'[0-9.]+';", "const VERSION='" + version + "';", code)
+            code, count = re.subn(r"const VERSION\s*=\s*'[0-9.A-Za-z-]+';", "const VERSION='" + version + "';", code)
             if count != 1:
                 raise ValueError('Missing service version')
+        if package == 'rtorrent':
+            pin = validator.rtorrent_version_pin(code)
+            code = code[:pin.start('version')] + rtorrent_version + code[pin.end('version'):]
         path.write_text(code)
     path = portal / 'manifest.json'
     manifest = json.loads(path.read_text())

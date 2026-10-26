@@ -1,5 +1,5 @@
 {
-  "checked_on": "2026-09-30",
+  "checked_on": "2026-10-25",
   "payloads": [
     {
       "file": "kstuff.elf",
@@ -11,7 +11,7 @@
     {
       "file": "shadowmountplus.elf",
       "version": "1.7beta8-botty.1",
-      "digest": "sha256:b2a52e4a3676ca554bc71c92fd7c5558d326f97273f92cc964dfb90ecdc08e7e",
+      "digest": "sha256:6d5067b63e7c2a578f6b57cccd95a8cc5b339c1b27dd7dfce9d3650d03645736",
       "upstream_version": "1.7beta8",
       "upstream_digest": "sha256:7163472217a2390f5bcbe3b61a96963976f7b7bd84d960b8d926f35b9cbecf28",
       "upstream_url": "https://github.com/drakmor/ShadowMountPlus/releases/download/1.7beta8/shadowmountplus.elf",

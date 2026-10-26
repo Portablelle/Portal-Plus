@@ -94,8 +94,13 @@
    for (int i = 0; i < get_scan_path_count(); ++i) {
      char scan_path[MAX_PATH];
      if (!get_scan_path(i, scan_path))
-@@ -3119,7 +3131,7 @@
-   *error_out = runtime_mutation_block_reason();
+@@ -3116,10 +3128,11 @@
+                                           size_t *affected_out,
+                                           const char **error_out) {
+   *affected_out = 0;
+-  *error_out = runtime_mutation_block_reason();
++  *error_out = runtime_sleep_mode_active() ? "rest_mode" :
++      sm_install_has_pending_work() ? "install_pending" : NULL;
    if (*error_out)
      return EBUSY;
 -  if (sm_shellcore_background_work_blocked()) {
@@ -103,7 +108,7 @@
      *error_out = "runtime_prepared";
      return EBUSY;
    }
-@@ -3135,6 +3147,36 @@
+@@ -3135,6 +3148,36 @@
      return ENOMEM;
  
    int status = 0;
@@ -140,7 +145,7 @@
    runtime_mount_state_lock();
    for (size_t i = 0; i < count; ++i) {
      game_source_info_t info;
-@@ -3174,34 +3216,51 @@
+@@ -3174,34 +3217,51 @@
        }
      }
    }
@@ -205,7 +210,7 @@
        }
        continue;
      }
-@@ -3211,11 +3270,19 @@
+@@ -3211,11 +3271,19 @@
                          sizeof(tracked_path)) &&
          strcmp(tracked_path, source) == 0 &&
          !write_mount_link(snapshot[i].title_id, destination)) {
@@ -225,7 +230,7 @@
  }
  
  static const char *storage_job_state_name(storage_job_state_t state) {
-@@ -3576,6 +3643,8 @@
+@@ -3576,6 +3644,8 @@
    } else {
      scanner_mutation = true;
    }
@@ -234,7 +239,7 @@
    if (status == 0 && operation == GAME_STORAGE_UNPACK) {
      const bool read_only = true;
      status = sm_shellcore_mount_title_runtime(title_id, &read_only);
-@@ -3585,7 +3654,9 @@
+@@ -3585,7 +3655,9 @@
      }
    }
    if (status == 0) {
@@ -245,7 +250,7 @@
        status = EBUSY;
        error = "runtime_busy";
      } else
-@@ -3681,6 +3752,18 @@
+@@ -3681,6 +3753,18 @@
      pthread_mutex_unlock(&g_storage_job.mutex);
    }
  
@@ -264,7 +269,7 @@
    if (status == 0) {
      bool renamed = false;
      const char *copy_source = operation == GAME_STORAGE_UNPACK
-@@ -3714,8 +3797,18 @@
+@@ -3714,8 +3798,18 @@
          g_storage_job.processed_files = total_files;
          pthread_mutex_unlock(&g_storage_job.mutex);
        }
@@ -285,7 +290,7 @@
      }
    }
  
-@@ -3833,7 +3926,7 @@
+@@ -3833,12 +3927,20 @@
  static int start_storage_job(const char *title_id,
                               const char *destination_dir,
                               game_storage_operation_t operation,
@@ -293,18 +298,21 @@
 +                             bool delete_source, const char *expected_source,
                               storage_job_snapshot_t *accepted_out,
                               const char **error_out) {
++  if (strcmp(title_id, "PPSA99071") == 0) return EPERM;
    game_source_info_t source_info;
-@@ -3841,6 +3934,9 @@
+   int status = resolve_storage_source(title_id, operation, &source_info,
                                        error_out);
++  // Validate missing-source deletions before the handler can queue reconciliation.
++  if (expected_source &&
++      (status == 0 || (*error_out && strcmp(*error_out, "source_missing") == 0)) &&
++      strcmp(expected_source, source_info.physical_path) != 0) {
++    *error_out = NULL;
++    return ESTALE;
++  }
    if (status != 0)
      return status;
-+  if (expected_source && strcmp(expected_source, source_info.physical_path) != 0)
-+    return ESTALE;
-+  if (strcmp(title_id, "PPSA99071") == 0) return EPERM;
    if (operation == GAME_STORAGE_UNPACK &&
-       (!source_info.image_backed || is_data_mounted(title_id) ||
-        sm_shellcore_service_title_is_prepared(title_id))) {
-@@ -4844,8 +4940,19 @@
+@@ -4844,8 +4946,19 @@
    storage_job_snapshot_t accepted;
    memset(&accepted, 0, sizeof(accepted));
    const char *error = NULL;

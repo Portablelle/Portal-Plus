@@ -20,14 +20,50 @@ static pid_t current_pid;
 static sm_shellcore_firmware_offsets_t offsets;
 static uintptr_t target;
 static unsigned tests;
+static bool kstuff_loaded = true;
 static int lock_fail_at = -1;
 static size_t locked_count;
+static uintptr_t locked_pages[8];
 bool should_stop_requested(void) { return false; }
+bool sm_kstuff_remote_mprotect(pid_t pid, uintptr_t address, size_t size, int protection) {
+  (void)pid; (void)address; (void)size; (void)protection; return true;
+}
+bool sm_kstuff_is_loaded(void) { return kstuff_loaded; }
 bool sm_kstuff_remote_mlock(pid_t pid, uintptr_t address, size_t size) {
-  assert(pid == 42 && address > 0 && size > 0);
+  assert(pid == 42 && size == 0x4000 && (address & 0x3fff) == 0);
+  assert(locked_count < 8);
   if ((int)locked_count == lock_fail_at) return false;
-  locked_count++;
+  locked_pages[locked_count++] = address;
   return true;
+}
+static void test_page_pinning(void) {
+  sm_shellcore_firmware_offsets_t layout = {0};
+  sm_shellcore_remote_t remote = {.pid=42, .offsets=&layout};
+  remote.targets[SM_SHELLCORE_TARGET_LAUNCH_APP] = 0x1fff8;
+  layout.targets[SM_SHELLCORE_TARGET_LAUNCH_APP].patch_size = 12;
+  remote.targets[SM_SHELLCORE_TARGET_SANDBOX_READY] = 0x20040;
+  layout.targets[SM_SHELLCORE_TARGET_SANDBOX_READY].patch_size = 5;
+  remote.targets[SM_SHELLCORE_TARGET_INSTALL_ALL] = 0x28000;
+  layout.targets[SM_SHELLCORE_TARGET_INSTALL_ALL].patch_size = 12;
+  assert(lock_hook_pages(42, &remote, 3, 0x2bff0, 64));
+  assert(locked_count == 4);
+  assert(locked_pages[0] == 0x1c000 && locked_pages[1] == 0x20000 &&
+         locked_pages[2] == 0x28000 && locked_pages[3] == 0x2c000);
+  for (int i = 0; i < 4; ++i) {
+    locked_count = 0; lock_fail_at = i;
+    assert(!lock_hook_pages(42, &remote, 3, 0x2bff0, 64));
+    assert(locked_count == (size_t)i);
+  }
+  lock_fail_at = -1; locked_count = 0; kstuff_loaded = false;
+  assert(!lock_hook_pages(42, &remote, 3, 0x2bff0, 64));
+  assert(locked_count == 0); kstuff_loaded = true;
+  assert(!lock_hook_pages(42, &remote, 4, 0x2bff0, 64));
+  locked_count = 0;
+  assert(!lock_hook_pages(42, &remote, 3, UINTPTR_MAX-4, 64));
+  locked_count = 0;
+  assert(lock_hook_pages(42, &remote, 2, 0x20080, 64));
+  assert(locked_count == 2); // No install hook on older firmware; deduplicated cave.
+  locked_count = 0;
 }
 
 
@@ -51,7 +87,8 @@ bool sm_shellcore_remote_resolve(pid_t pid, sm_shellcore_remote_t *out) {
   return true;
 }
 bool sm_remote_process_attach(pid_t pid) {
-  assert(pid==42); attach_count++;
+  attach_count++;
+  if (pid != 42) return false;
   if(conflict_on_attach) memory[target]=0xcc;
   return !fail_attach;
 }
@@ -87,35 +124,34 @@ static void reset(bool installed) {
   read_failures=attach_count=write_count=dispatch_count=0;
   fail_attach=fail_detach=fail_patch=corrupt_verify=failed_verify=0;
   wrong_image=conflict_on_attach=bad_rollback=0; current_pid=42;
-  locked_count=0; lock_fail_at=-1;
-  memset(&offsets, 0, sizeof(offsets));
-  offsets.firmware=0x1300; offsets.bridge_cave_offset=924;
-  offsets.bridge_cave_size=SM_SHELLCORE_BRIDGE_MAX_BLOB_SIZE;
-  offsets.sandbox_call_target_offset=6500;
-  g_hooks.status=SHELLCORE_HOOKS_READY; g_hooks.enabled=true;
+  g_hooks.status=SHELLCORE_HOOKS_READY;
   g_hooks.remote.pid=42; g_hooks.remote.image_base=100;
   g_hooks.remote.offsets=&offsets; g_hooks.hook_count=3;
   g_hooks.bridge_address=1024;
   g_hooks.bridge_size=sm_shellcore_bridge_blob_end-sm_shellcore_bridge_blob_start;
-  for (size_t i=0; i<3; ++i) {
-    sm_shellcore_target_t kind = i==0 ? SM_SHELLCORE_TARGET_LAUNCH_APP :
-      i==1 ? SM_SHELLCORE_TARGET_SANDBOX_READY : SM_SHELLCORE_TARGET_INSTALL_ALL;
-    uintptr_t site=g_hooks.remote.targets[kind]=5000+i*100;
-    size_t size=i==1 ? 5 : 16;
-    offsets.targets[kind].patch_size=size;
-    g_hooks.hooks[i].target=kind; g_hooks.hooks[i].original_size=size;
-    memset(g_hooks.hooks[i].original,0x90,size);
-    if (i==1) assert(build_relative_call(g_hooks.hooks[i].original, site, 6600));
-    else memcpy(g_hooks.hooks[i].original,k_expected_function_prologue,4);
-    memcpy(memory+site,g_hooks.hooks[i].original,size);
-  }
-  g_hooks.remote.targets[SM_SHELLCORE_TARGET_INSTALL_TITLE_DIR]=5400;
-  memcpy(memory+5400,k_expected_function_prologue,4);
-  target=g_hooks.remote.targets[SM_SHELLCORE_TARGET_INSTALL_ALL];
-  assert(populate_bridge(&g_hooks,memory+g_hooks.bridge_address));
-  assert(patch_remote_jump(42,5000,remote_bridge_symbol(sm_shellcore_bridge_launch_hook),16));
-  assert(patch_remote_call(42,5100,remote_bridge_symbol(sm_shellcore_bridge_sandbox_hook)));
+  assert(g_hooks.bridge_size<=sizeof(g_hooks.expected_bridge));
+  memcpy(g_hooks.expected_bridge,sm_shellcore_bridge_blob_start,g_hooks.bridge_size);
+  memcpy(memory+g_hooks.bridge_address,g_hooks.expected_bridge,g_hooks.bridge_size);
+  target=g_hooks.remote.targets[SM_SHELLCORE_TARGET_INSTALL_ALL]=4096;
+  g_hooks.hooks[2].target=SM_SHELLCORE_TARGET_INSTALL_ALL;
+  g_hooks.hooks[2].original_size=16;
+  memset(g_hooks.hooks[2].original,0x90,16);
+  memcpy(g_hooks.hooks[2].original,k_expected_function_prologue,4);
+  memcpy(memory+target,g_hooks.hooks[2].original,16);
   if(installed) assert(patch_remote_jump(42,target,remote_bridge_symbol(sm_shellcore_bridge_install_all_hook),16));
+  g_hooks.enabled = true;
+  for (size_t i = 0; i < 2; ++i) {
+    shellcore_hook_record_t *record = &g_hooks.hooks[i];
+    record->target = i == 0 ? SM_SHELLCORE_TARGET_LAUNCH_APP
+                            : SM_SHELLCORE_TARGET_SANDBOX_READY;
+    record->original_size = i == 0 ? 16 : 5;
+    memset(record->original, 0x90, record->original_size);
+    uintptr_t address = g_hooks.remote.targets[record->target] = 6000 + i * 100;
+    uintptr_t destination = remote_bridge_symbol(k_hook_symbols[i]);
+    assert(i == 1 ? patch_remote_call(42, address, destination)
+                  : patch_remote_jump(42, address, destination,
+                                      record->original_size));
+  }
   write_count=0;
 }
 static bool install(void) {
@@ -130,11 +166,81 @@ static void *parallel_install(void *unused) {
   assert(sm_shellcore_install_title_dir("PPSA99998", "/data/test", &result));
   assert(result==0); return NULL;
 }
+static void reset_refresh(void) {
+  reset(false);
+  g_hooks.enabled = true;
+  for (size_t i = 0; i < 2; ++i) {
+    shellcore_hook_record_t *record = &g_hooks.hooks[i];
+    record->target = i == 0 ? SM_SHELLCORE_TARGET_LAUNCH_APP
+                            : SM_SHELLCORE_TARGET_SANDBOX_READY;
+    record->original_size = i == 0 ? 16 : 5;
+    memset(record->original, 0x90, record->original_size);
+    g_hooks.remote.targets[record->target] = 6000 + i * 100;
+  }
+  assert(populate_bridge(&g_hooks, g_hooks.expected_bridge));
+  memcpy(memory + g_hooks.bridge_address, g_hooks.expected_bridge,
+         g_hooks.bridge_size);
+  for (size_t i = 0; i < 3; ++i) {
+    const shellcore_hook_record_t *record = &g_hooks.hooks[i];
+    uintptr_t address = g_hooks.remote.targets[record->target];
+    uintptr_t destination = remote_bridge_symbol(k_hook_symbols[i]);
+    assert(i == 1 ? patch_remote_call(42, address, destination)
+                  : patch_remote_jump(42, address, destination,
+                                      record->original_size));
+  }
+  attach_count = write_count = 0;
+}
+
+static void test_upstream_refresh(void) {
+  reset_refresh();
+  assert(sm_shellcore_hooks_refresh());
+  assert(attach_count == 0 && write_count == 0);
+  // Each missing entry point is recovered, with the existing bridge retained.
+  for (size_t i = 0; i < 3; ++i) {
+    reset_refresh();
+    const shellcore_hook_record_t *record = &g_hooks.hooks[i];
+    memcpy(memory + g_hooks.remote.targets[record->target], record->original,
+           record->original_size);
+    assert(sm_shellcore_hooks_refresh());
+    assert(attach_count == 1 && write_count == 1 && hook_installed(42, i));
+    assert(install());
+  }
+  // Firmware before 12.00 has only the base bridge, without install slots.
+  reset_refresh();
+  g_hooks.hook_count = SHELLCORE_BASE_HOOK_COUNT;
+  g_hooks.bridge_size = sm_shellcore_bridge_base_end - sm_shellcore_bridge_blob_start;
+  assert(populate_bridge(&g_hooks, g_hooks.expected_bridge));
+  memcpy(memory + g_hooks.bridge_address, g_hooks.expected_bridge, g_hooks.bridge_size);
+  memcpy(memory + g_hooks.remote.targets[SM_SHELLCORE_TARGET_LAUNCH_APP],
+         g_hooks.hooks[0].original, g_hooks.hooks[0].original_size);
+  assert(sm_shellcore_hooks_refresh());
+  assert(attach_count == 1 && write_count == 1 && hook_installed(42, 0));
+  reset_refresh(); memory[target] = 0xcc;
+  assert(!sm_shellcore_hooks_refresh()); assert(write_count == 0);
+  reset_refresh(); memcpy(memory + target, g_hooks.hooks[2].original, 16);
+  memory[g_hooks.bridge_address + 100] ^= 1;
+  assert(!sm_shellcore_hooks_refresh()); assert(write_count == 0);
+  reset_refresh(); memcpy(memory + target, g_hooks.hooks[2].original, 16);
+  memory[remote_bridge_symbol(sm_shellcore_bridge_install_armed)] = 1;
+  assert(!sm_shellcore_hooks_refresh()); assert(write_count == 0);
+  reset_refresh(); memcpy(memory + target, g_hooks.hooks[2].original, 16);
+  wrong_image = 1;
+  assert(!sm_shellcore_hooks_refresh()); assert(write_count == 0);
+  reset_refresh(); memcpy(memory + target, g_hooks.hooks[2].original, 16);
+  fail_detach = 1;
+  assert(!sm_shellcore_hooks_refresh());
+  assert(g_hooks.status == SHELLCORE_HOOKS_ROLLBACK_PENDING);
+  assert(!install());
+}
+
 int main(void) {
+  test_page_pinning();
+  test_upstream_refresh();
   reset(true); assert(install()); assert(attach_count==0 && dispatch_count==1);
-  reset(true); read_failures=1; assert(install()); assert(attach_count==1);
-  reset(true); read_failures=3; assert(!install());
+  reset(true); read_failures=1; assert(install()); assert(attach_count==0);
+  reset(true); read_failures=8; assert(!install());
   assert(g_hooks.status==SHELLCORE_HOOKS_STALE && write_count==0);
+  read_failures=0;
   assert(install()); // No permanent failure after a transient read error.
   reset(false); assert(install()); assert(attach_count==1 && dispatch_count==1);
   assert(g_hooks.status==SHELLCORE_HOOKS_READY);
@@ -161,26 +267,12 @@ int main(void) {
   reset(false); fail_detach=1; assert(!install()); assert(dispatch_count==0);
   assert(g_hooks.status==SHELLCORE_HOOKS_ROLLBACK_PENDING);
   assert(!install()); assert(dispatch_count==0);
+  reset(false); current_pid=43; assert(!install()); assert(write_count==0);
+  assert(g_hooks.enabled && g_hooks.status==SHELLCORE_HOOKS_STALE);
+  assert(!sm_shellcore_hooks_refresh()); // Retry the new PID, never report disabled success.
+  current_pid=42; assert(install());
   reset(false); g_hooks.status=SHELLCORE_HOOKS_ROLLBACK_PENDING;
   assert(!install()); assert(write_count==0);
-  // All three missing hooks are refreshed, while the existing cave is retained.
-  reset(false);
-  memcpy(memory+5000,g_hooks.hooks[0].original,16);
-  memcpy(memory+5100,g_hooks.hooks[1].original,5);
-  assert(install()); assert(attach_count==1);
-  assert(hook_installed(42,0) && hook_installed(42,1) && hook_installed(42,2));
-  // Exercise the upstream page-retention path, including every lock failure.
-  for (int failure=-1; failure<4; ++failure) {
-    reset(false);
-    for (size_t i=0;i<3;++i)
-      memcpy(memory+g_hooks.remote.targets[g_hooks.hooks[i].target],
-             g_hooks.hooks[i].original,g_hooks.hooks[i].original_size);
-    memset(memory+g_hooks.bridge_address,0,g_hooks.bridge_size);
-    lock_fail_at=failure;
-    assert(install_hooks_for_pid(42)==(failure<0));
-    assert(locked_count==(failure<0 ? 4u : (size_t)failure));
-    if (failure>=0) assert(write_count==0);
-  }
   reset(false); pthread_t workers[8];
   for(unsigned i=0;i<8;i++) assert(pthread_create(&workers[i],NULL,parallel_install,NULL)==0);
   for(unsigned i=0;i<8;i++) assert(pthread_join(workers[i],NULL)==0);

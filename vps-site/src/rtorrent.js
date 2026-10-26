@@ -3,9 +3,9 @@ import { sleep, MAX_ELF_BYTES } from './ps5-io.js';
 import { diagnosticError } from './diagnostics.js';
 export const ROOT='/data/botty/rtorrent';
 export const STATE=ROOT+'/state';
-const VERSION='0.16.24-botty4';
+const VERSION='0.16.24-botty10';
 const BASE='./apps/rtorrent/';
-const HASH = '4ddb0ef1be886de56d1b965bd10342672943f688be951284f932ef5a33e62f68';
+const HASH = '87e0dd00294ad9905f5fe0e3e5087eb0096a229fc7a90221a4ebca039ebf657d';
 const enc=new TextEncoder(),dec=new TextDecoder();
 export async function installAndStart(io,options={}) {
   const report=options.report||(()=>{}),wait=options.wait||sleep,fetchFile=options.fetchFile||fetch,digest=options.digest||sha256;

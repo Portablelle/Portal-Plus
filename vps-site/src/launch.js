@@ -1,3 +1,4 @@
+import { OpenNowIO, installOpenNow } from './opennow.js';
 import { CodexIO, startCodex, codexStatus } from './codex.js';
 import { normalizeLaunchServices, supportsPpr } from './launch-options.js';
 import { CheatRunnerIO, installAndStartCheatRunner, cheatRunnerStatus } from './cheatrunner.js';
@@ -17,6 +18,14 @@ export async function launchSession(options) {
   const services = normalizeLaunchServices(options.services);
   const summary = createSessionResult(services);
   let step = 'jailbreak';
+  const inspectAccess = async label => { try { await options.inspectAccess?.(label); } catch {} };
+  const checkpoint = async () => { try { await options.saveLog?.(); } catch {} };
+  const runStep = async (...args) => {
+    await inspectAccess('before ' + args[0]);
+    await checkpoint();
+    try { return await launchStep(emit, ...args); }
+    finally { await inspectAccess('after ' + args[0]); await checkpoint(); }
+  };
   const record = (id, state, detail, extra = {}) => Object.assign(summary.components[id], { state, detail }, extra);
   try {
     if (services.ppr && !supportsPpr(options.firmware)) {
@@ -27,24 +36,39 @@ export async function launchSession(options) {
     const send = options.send || sendPayload;
     const wait = options.wait || sleep;
     report('Running jailbreak. Keep this page open.');
-    const runtime = await launchStep(emit, 'jailbreak', () => atStage('Jailbreak', () => options.jailbreak()));
+    const runtime = await runStep('jailbreak', () => atStage('Jailbreak', () => options.jailbreak()));
     record('jailbreak', 'ready', 'Jailbreak runtime obtained. Component readiness is checked separately.');
     step = 'io';
-    const io = await launchStep(emit, 'io', () => atStage('Console I/O', () => options.io || new PS5IO(runtime)));
+    const io = await runStep('io', () => atStage('Console I/O', () => options.io || new PS5IO(runtime)));
     record('io', 'ready', 'Console I/O adapter initialized. Service checks are reported separately.');
+    // Logging is optional and must never change the launch outcome.
+    try { await options.onIO?.(io); } catch {}
     step = 'native';
     // Publish the complete title before ShadowMountPlus scans the homebrew directory.
-    const native = await launchStep(emit, 'native', () => atStage('Botty+ native installation', () => (options.native || installNative)(options.nativeIO || new NativeIO(runtime), { report, reuseNewer: true })), { enabled: services.botty });
+    const native = await runStep('native', () => atStage('Botty+ native installation', () => (options.native || installNative)(options.nativeIO || new NativeIO(runtime), { report, reuseNewer: true })), { enabled: services.botty });
     if (services.botty) record('native', 'ready', 'Installed app prepared or recognized and preserved. Home screen visibility is not confirmed.');
+    let opennow = { skipped: true };
+    if (services.opennow) {
+      step = 'opennow';
+      try {
+        opennow = await runStep('opennow', () => (options.opennow || installOpenNow)(options.opennowIO || new OpenNowIO(runtime), { report }));
+      } catch (error) { opennow = optionalFailure('OpenNOW PS5', error); }
+      Object.assign(summary.components.opennow, optionalComponent(opennow, 'App files prepared; home screen visibility is not confirmed.'));
+      report(opennow.reason || 'OpenNOW app files prepared.');
+    }
     step = 'kstuff';
-    await atStage('Required payloads', () => loadRequiredPayloads(runtime, { send: (runtime, name) => atStage(name, () => send(runtime, name)), wait, report, ppr: services.ppr, onProgress: emit,
+    await atStage('Required payloads', () => loadRequiredPayloads(runtime, { send: async (runtime, name) => {
+      await inspectAccess('before ' + name);
+      try { return await atStage(name, () => send(runtime, name)); }
+      finally { await inspectAccess('after ' + name); }
+    }, wait, report, ppr: services.ppr, onProgress: emit,
       beforePayload(name) { step = name === 'kstuff.elf' ? 'kstuff' : name === 'a53_ppr_install.elf' ? 'ppr' : 'shadowmount'; },
       confirmPpr: options.confirmPpr,
       confirmedPpr() { record('ppr', 'ready', 'Success notification confirmed by the user; no automatic startup check.'); },
       markSent() { record(step, 'unconfirmed', 'Payload sent. Startup is not confirmed; check the console notification.', { delivered: true }); },
     }));
     step = 'ftp';
-    await launchStep(emit, 'ftp', () => atStage('FTP startup', async () => {
+    await runStep('ftp', () => atStage('FTP startup', async () => {
       report('Starting FTP…');
       if (!await io.listening(2121)) {
         await send(runtime, 'ftpsrv-ps5.elf');
@@ -58,29 +82,21 @@ export async function launchSession(options) {
       record('ftp', 'ready', 'Listener confirmed on port 2121.');
     }), { enabled: services.ftp });
     if (!services.ftp) report('FTP startup skipped by launch options.');
-    step = 'rtorrent';
-    const rtorrent = await launchStep(emit, 'rtorrent', async () => {
-      report('Preparing rTorrent…');
-      const result = await atStage('rTorrent installation / startup', () => (options.rtorrent || installAndStart)(io, { report }));
-      record('rtorrent', 'ready', 'Listener confirmed on port 5001.');
-      return result;
-    }, { enabled: services.rtorrent || services.botty });
-    if (!services.rtorrent && !services.botty) report('rTorrent startup skipped by launch options.');
     let manager = { skipped: true };
     step = 'manager';
     if (services.botty) {
       report('Preparing Botty…');
-      manager = await launchStep(emit, 'manager', () => atStage('Botty+ manager installation / startup', () => (options.manager || installAndStartManager)(io, { report })));
+      manager = await runStep('manager', () => atStage('Botty+ manager installation / startup', () => (options.manager || installAndStartManager)(io, { report })));
       record('manager', manager?.updatePending ? 'update_pending' : 'ready', manager?.updatePending
         ? 'Current service health confirmed. Update applies next console session; active work is preserved.'
         : 'Service health confirmed on port 8088.');
     } else report('Botty+ installation and service startup skipped by launch options.');
     if (!services.botty) emit({ id: 'manager', state: 'skipped', detail: 'Not selected.' });
-    report('Core setup completed. Optional components are checked next; home screen visibility is not confirmed.');
+    report('Botty service preparation completed. Optional components are checked before rTorrent starts; home screen visibility is not confirmed.');
     step = 'cheatrunner';
     let cheatrunner = { ready: false, skipped: true, reason: 'CheatRunner startup skipped by launch options.' };
     if (services.cheatrunner) try {
-      cheatrunner = await launchStep(emit, 'cheatrunner', () => (options.cheatrunner || installAndStartCheatRunner)(options.cheatRunnerIO || new CheatRunnerIO(runtime), { report, wait }));
+      cheatrunner = await runStep('cheatrunner', () => (options.cheatrunner || installAndStartCheatRunner)(options.cheatRunnerIO || new CheatRunnerIO(runtime), { report, wait }));
     } catch (error) {
       cheatrunner = optionalFailure('CheatRunner', error);
     }
@@ -92,14 +108,24 @@ export async function launchSession(options) {
     step = 'codex';
     let codex = { ready: false, skipped: true };
     if (services.codex) try {
-      codex = await launchStep(emit, 'codex', () => (options.codex || startCodex)(options.codexIO || new CodexIO(runtime), { report, wait }));
+      codex = await runStep('codex', () => (options.codex || startCodex)(options.codexIO || new CodexIO(runtime), { report, wait }));
     } catch (error) { codex = optionalFailure('Codex PS5', error); }
     Object.assign(summary.components.codex, optionalComponent(codex, 'Listener confirmed on port 49322. App visibility and ChatGPT connection are not confirmed.'));
     if (services.codex) report(codexStatus(codex));
     else emit({ id: 'codex', state: 'skipped', detail: 'Not selected.' });
     if (codex.diagnostic) report(safeLog('Codex PS5 installation / startup: ' + codex.reason), { logOnly: true });
+    // Restored torrents can exhaust the console's shared descriptor budget.
+    // Finish all installers and start their services before opening torrent files.
+    step = 'rtorrent';
+    const rtorrent = await runStep('rtorrent', async () => {
+      report('Preparing rTorrent…');
+      const result = await atStage('rTorrent installation / startup', () => (options.rtorrent || installAndStart)(io, { report }));
+      record('rtorrent', 'ready', 'Listener confirmed on port 5001.');
+      return result;
+    }, { enabled: services.rtorrent || services.botty });
+    if (!services.rtorrent && !services.botty) report('rTorrent startup skipped by launch options.');
     failed = false;
-    return {native, rtorrent, manager, cheatrunner, codex, summary: finishSessionResult(summary)};
+    return {native, rtorrent, manager, cheatrunner, codex, opennow, summary: finishSessionResult(summary)};
   } catch (error) {
     record(step, error.deferred ? 'deferred' : 'failed', safeLog(error.logMessage || error.message || String(error)));
     error.sessionResult = finishSessionResult(summary, true);

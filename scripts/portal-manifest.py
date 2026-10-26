@@ -1,11 +1,15 @@
 #!/usr/bin/env python3
 """Verify, index and export only the public portal files; never local backups."""
+import sys
 import argparse
 import hashlib
 import json
 from pathlib import Path
 import re
 import shutil
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from source_parts import source_names
 
 PUBLIC_FILES = ('index.html', 'portal.css', 'README.md', 'LICENSE')
 PAYLOADS = ('ProsperoMgr.elf', 'elfldr-ps5-1360.elf', 'ftpsrv-ps5.elf',
@@ -14,6 +18,7 @@ PAYLOAD_NOTICES = ('shadowmountplus-source.tar.gz', 'shadowmountplus-LICENSE.txt
                    'shadowmountplus-NOTICE.md', 'ppr-patch-source.tar.gz',
                    'ppr-patch-LICENSE.txt', 'ppr-patch-NOTICE.md')
 PACKAGE_NOTICES = {
+    'opennow': ('NOTICE.md', 'LICENSE', 'licenses/libsrtp.txt', 'licenses/usrsctp.txt'),
     'codex': ('NOTICE.md', 'LICENSE', 'codex-source.tar.gz'),
     'cheatrunner': ('NOTICE.md', 'LICENSE', 'cheatrunner-source.tar.gz'),
     'rtorrent': ('README.md', 'LICENSE', 'rtorrent-source.tar.gz'),
@@ -41,7 +46,7 @@ def public_files(root):
         prefix = 'apps/' + package + '/'
         manifest = json.loads((root / prefix / 'manifest.json').read_text())
         entries = manifest['files'] + ([manifest['helper']] if 'helper' in manifest else [])
-        names.extend(prefix + name for name in ('manifest.json', *notices))
+        names.extend(prefix + name for name in ('manifest.json', *notices, *source_names(root / 'apps' / package, verify=False)))
         for entry in entries:
             name = entry['path']
             rel = Path(name)
@@ -66,8 +71,35 @@ def digest(path):
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def rtorrent_version(data):
+    version = data.get('id')
+    if not isinstance(version, str):
+        raise ValueError('Missing or non-string rTorrent package id')
+    if not re.fullmatch(r'[0-9]+(?:\.[0-9]+){2}-botty[0-9]+', version):
+        raise ValueError('Invalid rTorrent version format: ' + version)
+    return version
+
+
+# Skip comments and string literals before considering a standalone declaration.
+RTORRENT_VERSION_TOKEN = re.compile(
+    r"^[ \t]*const[ \t]+VERSION[ \t]*=[ \t]*'(?P<version>[^'\r\n]+)'[ \t]*;[ \t]*(?=\r?$)"
+    r"|//[^\r\n]*|/\*[\s\S]*?\*/"
+    r"|'(?:\\[\s\S]|[^'\\])*'|\"(?:\\[\s\S]|[^\"\\])*\"|`(?:\\[\s\S]|[^`\\])*`",
+    re.MULTILINE)
+
+
+def rtorrent_version_pin(code):
+    pins = [match for match in RTORRENT_VERSION_TOKEN.finditer(code) if match['version'] is not None]
+    if not pins:
+        raise ValueError('Missing rTorrent installer VERSION declaration')
+    if len(pins) != 1:
+        raise ValueError('Multiple rTorrent installer VERSION declarations')
+    return pins[0]
+
+
 def verify_packages(root):
     for package, installer, constant in (
+        ('opennow', 'opennow.js', 'HASH'),
         ('codex', 'codex-install.js', 'HASH'),
         ('cheatrunner', 'cheatrunner.js', 'HASH'),
         ('botty', 'botty-manager.js', 'HASH'),
@@ -81,7 +113,14 @@ def verify_packages(root):
         match = re.search(r'const\s+' + constant + r"\s*=\s*'([a-f0-9]{64})'", code)
         if not match or digest(manifest) != match[1]:
             raise ValueError('Installer manifest pin mismatch: ' + package)
+        source_names(base)
         data = json.loads(manifest.read_text())
+        if package == 'rtorrent':
+            version = rtorrent_version(data)
+            pin = rtorrent_version_pin(code)
+            if pin['version'] != version:
+                raise ValueError('Installer version mismatch: rtorrent (installer ' +
+                                 pin['version'] + ', package ' + version + ')')
         entries = data['files'] + ([data['helper']] if 'helper' in data else [])
         seen = set()
         for entry in entries:

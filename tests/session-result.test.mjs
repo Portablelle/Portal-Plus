@@ -49,8 +49,9 @@ test('blocking failure preserves earlier results and leaves later selected steps
     const { summary, sessionResult } = error;
     assert.equal(summary, undefined);
     assert.equal(sessionResult.outcome, 'blocked');
-    for (const id of ['jailbreak', 'native', 'ftp', 'rtorrent']) assert.equal(sessionResult.components[id].state, 'ready');
+    for (const id of ['jailbreak', 'native', 'ftp']) assert.equal(sessionResult.components[id].state, 'ready');
     assert.equal(sessionResult.components.manager.state, 'failed');
+    assert.equal(sessionResult.components.rtorrent.state, 'deferred');
     assert.equal(sessionResult.components.cheatrunner.state, 'deferred');
     assert.equal(sessionResult.components.cheatrunner.detail, 'Not executed yet.');
     return true;

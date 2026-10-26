@@ -21,7 +21,8 @@ typedef struct { int id; } storage_job_snapshot_t;
 static int accepted_jobs, resolved_status, destination_calls;
 static bool protected_title;
 static int resolve_storage_source(const char *title, game_storage_operation_t op, game_source_info_t *info, const char **error) {
-  (void)title; (void)op; (void)error;
+  (void)title;
+  *error = resolved_status == ENOENT && op == GAME_STORAGE_DELETE ? "source_missing" : NULL;
   strcpy(info->physical_path, "/data/games/original"); info->image_backed=false;
   return resolved_status;
 }
@@ -67,6 +68,10 @@ int main(void) {
   resolved_status=ENOENT;
   assert(start_storage_job("PPSA12345",NULL,GAME_STORAGE_DELETE,false,
     "/data/games/original",&job,&error)==ENOENT && accepted_jobs==3);
+  assert(start_storage_job("PPSA12345",NULL,GAME_STORAGE_DELETE,false,
+    "/data/games/stale",&job,&error)==ESTALE && error==NULL);
+  assert(start_storage_job("PPSA99071",NULL,GAME_STORAGE_DELETE,false,
+    "/data/games/original",&job,&error)==EPERM && accepted_jobs==3);
   puts("Production API admission: stale sources, self/protected titles, jobs and legacy requests passed");
 }
 '''

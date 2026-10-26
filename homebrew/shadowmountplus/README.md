@@ -6,7 +6,7 @@ Portal+ delivers this payload; its version is independent of Botty+ and Portal+.
 
 ## Upstream improvements
 
-The upgrade from beta4 includes the TV/gamepad web interface, local and streamed
+The upgrade from beta7 includes the TV/gamepad web interface, local and streamed
 PKG installation, installed patch/DLC information and individual removal,
 backport installation/replacement/deletion, PS4 image/folder installation, and
 support for `param.sfo`, `eboot2.bin` and additional homebrew IDs. The API now
@@ -19,10 +19,18 @@ the HTTP listener after rest mode/socket loss, filter fakelib overlays, expose
 system fonts read-only, add per-title fakelib modes, and recover lost ShellCore
 hooks. Upstream now retains hook/cave pages with Kstuff's remote `mlock` and has
 removed the legacy pause/toggle protocol. The old Botty TitleDir recovery,
-page-pinning and Kstuff guard patches are therefore superseded and removed.
+page-pinning and Kstuff guard patch files are superseded and removed. The
+consolidated `shellcore-hooks.patch` from main remains: it retains bounded read
+retries, checks the saved installed bridge and every resolved target before
+repair, and deduplicates 16 KiB page locks. Kstuff Lite remains v1.11.
 Do not use the legacy sysentvec pointer-poisoning helpers with Kstuff Lite.
 
 ## Retained Botty integration
+
+`patches/fakelib-readonly-cache.patch` retains main's filtered-cache fallback
+when source cleanup is denied on read-only media. It excludes root
+`libkernel.sprx` before signature traversal and copying, and refuses an
+unfiltered overlay when the required cache is unavailable.
 
 `patches/botty-background-storage.patch` preserves the
 `botty_background_storage_v1` capability used by Botty's asynchronous move/delete
@@ -33,7 +41,8 @@ remaining mounts block the operation. The worker holds both mutation gates;
 launches, including unmanaged titles, are refused while it owns the gate.
 
 The client supplies `expected_source`, follows the returned job identity and
-does not replay a destructive POST after losing its result. Moves rebase nested
+does not replay a destructive POST after losing its result. Mismatched paths
+return ESTALE even for missing-source deletions, before reconciliation can run. Moves rebase nested
 image paths, manual-source records and cache entries. Cross-volume copies flush
 files and compare sizes/tree totals before removing the source, with a 512 MiB
 free-space reserve. This is not a full content hash check. Interrupted operations
@@ -61,14 +70,15 @@ docker run --rm --platform linux/amd64 -v "$PWD:/work" portal-shadowmount-build:
 `tests/run.sh` compiles the production ShellCore hooks and assembly with isolated
 process-memory doubles. It checks lost-hook recovery, foreign/changed code,
 transient reads, armed requests, partial writes, rollback/detach failures,
-concurrent registration and hook-page retention failures. It also checks storage
+concurrent registration and hook-page retention failures. Filtered-cache tests
+cover read-only cleanup and copy failures. It also checks storage
 policy, nested-image rebasing, cross-volume source preservation and concurrent
 configuration reloads. The config harness is adapted from upstream's stale test
 to remove assertions for the deleted Kstuff pause functions.
 
 After retrieving the ELF, run `python3 scripts/package-shadowmount.py` from the
 repository root, then regenerate `scripts/portal-manifest.py` and run its
-`--check`. Packages include the full source archive, patch, tests, build recipe,
+`--check`. Packages include the full source archive, patches, tests, build recipe,
 GPL-3.0 license and SDK stub notice.
 
 Host tests and a cross-build do not establish console acceptance. Activate only

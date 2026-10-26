@@ -14,5 +14,6 @@
     "digest": "sha256:7163472217a2390f5bcbe3b61a96963976f7b7bd84d960b8d926f35b9cbecf28",
     "url": "https://github.com/drakmor/ShadowMountPlus/releases/download/1.7beta8/shadowmountplus.elf",
     "published_at": "2026-10-26T00:39:54Z"
-  }
+  },
+  "sourceArchive": "vendor/shadowmountplus-f640b3b.tar.gz"
 }

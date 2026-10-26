@@ -1,3 +1,4 @@
+import { embeddedRuntimeFiles } from '../vps-site/src/botty-engine-files.js';
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
@@ -10,7 +11,7 @@ for (const running of [false, true]) test('one launch prepares all components; F
   await launchSession({ jailbreak: async () => { events.push('jailbreak'); return {}; }, io: { listening: async () => ftp }, nativeIO: {}, cheatRunnerIO: {}, cheatrunner: async () => { events.push('cheatrunner'); return {ready:true,tileRegistered:true}; },
     native: async () => events.push('native'), rtorrent: async () => events.push('rtorrent'), manager: async () => events.push('manager'),
     send: async (_, name) => { events.push(name); if (name === 'ftpsrv-ps5.elf') ftp = true; }, wait: async ms => events.push(ms) });
-  assert.deepEqual(events, ['jailbreak', 'native', 'kstuff.elf', 10000, 'shadowmountplus.elf', ...(running ? [] : ['ftpsrv-ps5.elf']), 'rtorrent', 'manager', 'cheatrunner']);
+  assert.deepEqual(events, ['jailbreak', 'native', 'kstuff.elf', 10000, 'shadowmountplus.elf', ...(running ? [] : ['ftpsrv-ps5.elf']), 'manager', 'cheatrunner', 'rtorrent']);
 });
 test('failed FTP startup stops without blind duplicate sends', async () => {
   const sent = [];
@@ -20,13 +21,25 @@ test('failed FTP startup stops without blind duplicate sends', async () => {
 });
 const manifestBytes = new Uint8Array(await readFile(new URL('../vps-site/apps/botty-native/manifest.json', import.meta.url)));
 const {createHash} = await import('node:crypto');
+const nativeFiles = JSON.parse(new TextDecoder().decode(manifestBytes)).files.map(file => file.path);
 const nativeHash = createHash('sha256').update(manifestBytes).digest('hex');
 const stage = '/data/botty/native/' + nativeHash + '/PPSA99071';
 const journalPath = '/data/botty/native/update.json';
 const encode = value => new TextEncoder().encode(JSON.stringify(value));
 const decode = bytes => JSON.parse(new TextDecoder().decode(bytes));
+function seedPrivateRuntime(files) {
+  const inventory = [
+    ['keys/prod.keys', new TextEncoder().encode('synthetic keys')],
+    ['firmware/' + 'a'.repeat(32) + '.nca', new TextEncoder().encode('synthetic firmware')],
+  ].map(([path, bytes]) => {
+    files.set('/data/botty/emulation/switch/' + path, bytes);
+    return {path, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex')};
+  });
+  files.set('/data/botty/emulation/switch/private-runtime.json', encode({schema: 1, manifest: 'a'.repeat(64), files: inventory.length, inventory}));
+}
 function nativeFixture() {
   const files = new Map(), downloads = [], writes = [], events = [];
+  seedPrivateRuntime(files);
   const move = (source, target) => {
     assert.ok([...files.keys()].some(p => p.startsWith(source + '/')), 'source must exist');
     assert.ok(![...files.keys()].some(p => p.startsWith(target + '/')), 'never overwrite destination');
@@ -66,7 +79,7 @@ function nativeFixture() {
   return { files, downloads, writes, events, io, options, previous };
 }
 test('first launch installs native; second launch does not download or rewrite installed files', async () => {
-  const f = nativeFixture(); await installNative(f.io, f.options); assert.equal(f.writes.length, 13);
+  const f = nativeFixture(); await installNative(f.io, f.options); assert.equal(f.writes.length, nativeFiles.length);
   f.writes.length = 0; f.downloads.length = 0; await installNative(f.io, f.options);
   assert.deepEqual(f.writes, []); assert.deepEqual(f.downloads, ['./apps/botty-native/manifest.json']);
 });
@@ -88,32 +101,41 @@ test('native permissions make the executable and runtime loadable, with readable
     runtime: { chain: { syscall: async (...args) => { calls.push(args); return { low: 0 }; } } } };
   for (const root of [stage, NATIVE_ROOT]) {
     calls.length = 0; synced.length = 0;
-    await NativeIO.prototype.prepareNativePermissions.call(io, root);
-    assert.equal(calls.length, 17);
+    await NativeIO.prototype.prepareNativePermissions.call(io, root, nativeFiles);
+    const directories = new Set(['']);
+    for (const file of nativeFiles) {
+      const parts = file.split('/'); parts.pop();
+      while (parts.length) { directories.add('/' + parts.join('/')); parts.pop(); }
+    }
+    assert.equal(calls.length, nativeFiles.length + directories.size);
     for (const [syscall, path, mode] of calls) {
       assert.equal(syscall, 15);
       const relative = path.slice(root.length);
-      const executable = ['', '/assets', '/sce_module', '/sce_sys', '/eboot.bin', '/sce_module/libc.prx'].includes(relative);
+      const executable = directories.has(relative) || ['/eboot.bin', '/sce_module/libc.prx', '/emulation/eboot.bin', '/emulation/sce_module/libc.prx'].includes(relative);
       assert.equal(mode, executable ? 0o755 : 0o644, path);
     }
-    assert.equal(synced.length, 4);
+    assert.equal(synced.length, directories.size);
   }
   calls.length = 0;
-  await assert.rejects(NativeIO.prototype.prepareNativePermissions.call(io, '/data/homebrew/OTHER'), /Unexpected native permission root/);
+  await NativeIO.prototype.prepareNativePermissions.call(io, stage, [...nativeFiles, 'emulation/eboot.bin', 'emulation/sce_module/libc.prx']);
+  for (const name of ['emulation/eboot.bin', 'emulation/sce_module/libc.prx'])
+    assert.equal(calls.find(([, path]) => path === stage + '/' + name)[2], 0o755);
+  calls.length = 0;
+  await assert.rejects(NativeIO.prototype.prepareNativePermissions.call(io, '/data/homebrew/OTHER', nativeFiles), /Unexpected native permission root/);
   assert.deepEqual(calls, []);
   io.runtime.chain.syscall = async () => ({ low: 0xffffffff });
-  await assert.rejects(NativeIO.prototype.prepareNativePermissions.call(io, stage), /permissions/);
+  await assert.rejects(NativeIO.prototype.prepareNativePermissions.call(io, stage, nativeFiles), /permissions/);
 });
 test('native publication prepares runtime permissions before exposing the title', async () => {
   const events = [];
   const io = { prepareNativePermissions: async root => events.push(['permissions', root]),
     string: path => path, call: async () => 0, close: async () => {},
     moveDirectory: async (...paths) => events.push(['publish', ...paths]) };
-  await NativeIO.prototype.publishNative.call(io);
+  await NativeIO.prototype.publishNative.call(io, nativeFiles);
   assert.deepEqual(events, [['permissions', stage], ['publish', stage, NATIVE_ROOT]]);
   events.length = 0;
   io.prepareNativePermissions = async () => { throw Error('Permission setup failed'); };
-  await assert.rejects(NativeIO.prototype.publishNative.call(io), /Permission setup failed/);
+  await assert.rejects(NativeIO.prototype.publishNative.call(io, nativeFiles), /Permission setup failed/);
   assert.deepEqual(events, []);
 });
 test('interrupted native staging resumes without redownloading', async () => {
@@ -131,11 +153,11 @@ test('older native title updates only after staging, retains exact previous tree
   const journal = decode(f.files.get(journalPath)); assert.equal(journal.status, 'complete');
   for (const [p, data] of old) assert.deepEqual(f.files.get(journal.backup + p.slice(NATIVE_ROOT.length)), data);
   assert.equal(decode(f.files.get('/data/botty/jobs/example.json')).state, 'extracting');
-  assert.equal(decode(f.files.get(NATIVE_ROOT + '/sce_sys/param.json')).contentVersion, '01.004.000');
+  assert.equal(decode(f.files.get(NATIVE_ROOT + '/sce_sys/param.json')).contentVersion, decode(manifestBytes).version);
   assert.deepEqual(f.events, ['check-stopped', 'check-stopped', 'backup', 'publish']);
 });
 test('recognized current title with damaged executable is backed up and repaired', async () => {
-  const f = nativeFixture(); await f.previous('01.004.000');
+  const f = nativeFixture(); await f.previous(decode(manifestBytes).version);
   await installNative(f.io, f.options);
   assert.ok(f.files.get(NATIVE_ROOT + '/eboot.bin').length > 3);
   assert.deepEqual(f.files.get(decode(f.files.get(journalPath)).backup + '/eboot.bin'), new Uint8Array([1,2,3]));
@@ -157,13 +179,13 @@ test('launch keeps a recognized newer title untouched and starts every service',
     rtorrent: async () => services.push('rtorrent'), manager: async () => services.push('manager'),
     send: async (_, name) => services.push(name), wait: async () => {}, report: message => reports.push(message) });
   assert.deepEqual(result.native, {version: '99.000.000', updated: false});
-  assert.deepEqual(services, ['kstuff.elf', 'shadowmountplus.elf', 'rtorrent', 'manager']);
+  assert.deepEqual(services, ['kstuff.elf', 'shadowmountplus.elf', 'manager', 'rtorrent']);
   assert.deepEqual(f.files, before); assert.deepEqual(f.writes, []); assert.deepEqual(f.events, []);
   assert.deepEqual(f.downloads, ['./apps/botty-native/manifest.json']);
   assert.ok(reports.some(message => /Keeping installed Botty\+ 99\.000\.000/.test(message)));
 });
 for (const kind of ['foreign', 'missing-metadata', 'invalid-version']) test('launch reuse still rejects invalid title: ' + kind, async () => {
-  const f = nativeFixture(); await f.previous('01.004.000');
+  const f = nativeFixture(); await f.previous(decode(manifestBytes).version);
   const path = NATIVE_ROOT + '/sce_sys/param.json', param = decode(f.files.get(path));
   if (kind === 'foreign') param.contentId = 'OTHER';
   if (kind === 'invalid-version') param.contentVersion = '1.0.3';
@@ -215,6 +237,23 @@ test('lost completion checkpoint converges without a second replacement', async 
   f.io.writeJournal=write;f.events.length=0;await installNative(f.io,f.options);
   assert.equal(decode(f.files.get(journalPath)).status,'complete');assert.deepEqual(f.events,[]);
 });
+test('shared recovery keeps Botty uncertain live files and its backup untouched', async () => {
+  const f = nativeFixture(); await f.previous();
+  const publish = f.io.publishNative;
+  f.io.publishNative = async () => {
+    await publish();
+    f.files.set(NATIVE_ROOT + '/eboot.bin', new Uint8Array([9]));
+    throw Error('power loss');
+  };
+  await assert.rejects(installNative(f.io, f.options), /restart to recover/);
+  const journal = decode(f.files.get(journalPath)), before = new Map(f.files);
+  assert.equal(journal.status, 'pending');
+  assert.deepEqual(f.files.get(journal.backup + '/eboot.bin'), new Uint8Array([1,2,3]));
+  f.events.length = 0;
+  await assert.rejects(installNative(f.io, f.options), /unexpected title files/);
+  assert.deepEqual(f.files, before);
+  assert.deepEqual(f.events, []);
+});
 test('malformed or escaping recovery journal cannot move any title', async () => {
   const f=nativeFixture();await f.previous();f.files.set(journalPath,encode({schema:1,status:'pending',target:nativeHash,previous:nativeHash,backup:'/data/homebrew/OTHER'}));
   await assert.rejects(installNative(f.io,f.options),/journal is damaged/);assert.deepEqual(f.events,[]);assert.equal(f.writes.length,0);
@@ -243,7 +282,7 @@ test('registered metadata is backed up, updated, readable and confined to Botty+
   const backup='/data/botty/native/backups/'+'a'.repeat(32)+'/PPSA99071';
   await NativeIO.prototype.syncRegisteredMetadata.call(f.io,manifest,backup,sha256);
   assert.deepEqual(f.files.get(backup.replace('/PPSA99071','')+'/metadata/0.bin'),oldBytes);
-  assert.equal(decode(f.files.get(path)).contentVersion,'01.004.000');
+  assert.equal(decode(f.files.get(path)).contentVersion,decode(manifestBytes).version);
   assert.deepEqual(f.files.get('/user/app/PPSA99071/sce_sys/snd0.at9'), f.files.get(NATIVE_ROOT+'/sce_sys/snd0.at9'));
   assert.deepEqual(f.files.get('/user/app/OTHER/sce_sys/param.json'),new Uint8Array([8]));
   assert.ok(calls.every(([nr,p,mode])=>nr===15&&p.startsWith('/user/app/PPSA99071/')&&mode===0o644));
@@ -263,7 +302,7 @@ test('empty first-install reservation can recover from intact verified staging',
  await assert.rejects(installNative(f.io,f.options),/power loss/);
  f.io.nativeExists=async()=>true;f.io.removeEmptyNative=async()=>true;f.io.publishNative=publish;
  await installNative(f.io,f.options);
- assert.equal(decode(f.files.get(NATIVE_ROOT+'/sce_sys/param.json')).contentVersion,'01.004.000');
+ assert.equal(decode(f.files.get(NATIVE_ROOT+'/sce_sys/param.json')).contentVersion,decode(manifestBytes).version);
 });
 test('native rename failure removes only its empty reservation and never deletes source',async()=>{
  const events=[];const io={checkedPath:()=>{},string:p=>p,
@@ -315,8 +354,8 @@ for (let mask = 0; mask < 8; mask++) test('launch honors optional service combin
     cheatrunner: async () => { events.push('cheatrunner'); return { ready: true }; },
     send: async (_, name) => { events.push(name); if (name === 'ftpsrv-ps5.elf') ftp = true; }, wait: async () => {} });
   assert.deepEqual(events, ['jailbreak', 'native', 'kstuff.elf', 'shadowmountplus.elf',
-    ...(services.ftp ? ['ftpsrv-ps5.elf'] : []), 'rtorrent', 'manager',
-    ...(services.cheatrunner ? ['cheatrunner'] : [])]);
+    ...(services.ftp ? ['ftpsrv-ps5.elf'] : []), 'manager',
+    ...(services.cheatrunner ? ['cheatrunner'] : []), 'rtorrent']);
   assert.equal(result.cheatrunner.ready, services.cheatrunner);
   if (!services.cheatrunner) assert.equal(result.cheatrunner.skipped, true);
 });
@@ -330,7 +369,7 @@ test('compatible opt-in launch installs PPR before mounts and service startup', 
   await launchSession({services:{ppr:true,ftp:false,rtorrent:false,cheatrunner:false},firmware:'11.20',
     jailbreak:async()=>({}),io:{},nativeIO:{},native:async()=>{},rtorrent:async()=>events.push('rtorrent'),manager:async()=>events.push('manager'),
     send:async(_,name)=>events.push(name),wait:async()=>{},confirmPpr:async()=>events.push('confirmed')});
-  assert.deepEqual(events,['kstuff.elf','a53_ppr_install.elf','confirmed','shadowmountplus.elf','rtorrent','manager']);
+  assert.deepEqual(events,['kstuff.elf','a53_ppr_install.elf','confirmed','shadowmountplus.elf','manager','rtorrent']);
 });
 
 for (const rtorrent of [false, true]) test('Botty opt-out leaves its title and services untouched; standalone rTorrent: ' + rtorrent, async () => {
@@ -341,4 +380,85 @@ for (const rtorrent of [false, true]) test('Botty opt-out leaves its title and s
     rtorrent:async()=>events.push('rtorrent'),send:async(_,name)=>events.push(name),wait:async()=>{} });
   assert.deepEqual(events,['kstuff.elf','shadowmountplus.elf',...(rtorrent?['rtorrent']:[])]);
   assert.equal(result.native.skipped,true);assert.equal(result.manager.skipped,true);
+});
+
+// A multifile session can use the shared descriptor budget as soon as it resumes.
+test('all service preparation finishes before rTorrent exhausts file opens', async () => {
+  let exhausted = false;
+  const prepare = async () => { assert.equal(exhausted, false, 'installer must retain file access'); return { ready: true }; };
+  const result = await launchSession({
+    services: { botty: true, rtorrent: true, ftp: true, cheatrunner: true, codex: true },
+    jailbreak: async () => ({}), io: { listening: async () => true }, nativeIO: {}, cheatRunnerIO: {}, codexIO: {},
+    send: prepare, wait: async () => {}, native: prepare, manager: prepare,
+    cheatrunner: prepare, codex: prepare,
+    rtorrent: async () => { exhausted = true; return { ready: true }; },
+  });
+  assert.equal(exhausted, true);
+  for (const id of ['manager', 'rtorrent', 'cheatrunner', 'codex']) assert.equal(result.summary.components[id].state, 'ready');
+});
+
+function embeddedFixture() {
+  const f = nativeFixture();
+  const manifest = decode(manifestBytes);
+  manifest.files = manifest.files.filter(file => !embeddedRuntimeFiles.includes(file.path));
+  const engine = new Map();
+  for (const path of embeddedRuntimeFiles) {
+    const bytes = new TextEncoder().encode('synthetic ' + path); engine.set(path, bytes);
+    manifest.files.push({path, size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex')});
+  }
+  const combined = encode(manifest), fetchOriginal = f.options.fetchFile;
+  f.options.digest = async bytes => Buffer.from(bytes).equals(Buffer.from(combined)) ? nativeHash : createHash('sha256').update(bytes).digest('hex');
+  f.options.fetchFile = async url => {
+    if (url.startsWith('/private/')) throw Error('private endpoint offline');
+    const bytes = url.endsWith('/manifest.json') ? combined : engine.get(url.replace('./apps/botty-native/', ''));
+    return bytes ? {ok: true, arrayBuffer: async () => bytes.buffer} : fetchOriginal(url);
+  };
+  return f;
+}
+test('legacy 13-file Botty packages remain installable without private provisioning', async () => {
+  const f = nativeFixture(), manifest = decode(manifestBytes);
+  manifest.files = manifest.files.filter(file => file.path !== 'emulation-runtime.json' && !file.path.startsWith('emulation/'));
+  const legacy = encode(manifest), fetchOriginal = f.options.fetchFile;
+  f.files.delete('/data/botty/emulation/switch/private-runtime.json');
+  f.options.digest = async bytes => Buffer.from(bytes).equals(Buffer.from(legacy)) ? nativeHash : createHash('sha256').update(bytes).digest('hex');
+  f.options.fetchFile = async url => url.endsWith('/manifest.json') ? {ok: true, arrayBuffer: async () => legacy.buffer} : fetchOriginal(url);
+  await installNative(f.io, f.options);
+  assert.equal(f.writes.length, 13);
+  assert(!f.downloads.some(url => url.startsWith('/private/')));
+});
+test('embedded engine installs using an already provisioned private runtime', async () => {
+  const f = embeddedFixture();
+  seedPrivateRuntime(f.files);
+  await installNative(f.io, f.options);
+  assert(f.files.has(NATIVE_ROOT + '/emulation/eboot.bin'));
+  assert(f.files.has(NATIVE_ROOT + '/emulation/lapy.elf'));
+});
+test('newer native installation can be kept with private endpoint unavailable', async () => {
+  const f = embeddedFixture();
+  seedPrivateRuntime(f.files);
+  await f.previous('99.000.000');
+  f.files.delete('/data/botty/emulation/switch/private-runtime.json');
+  const result = await installNative(f.io, {...f.options, reuseNewer: true});
+  assert.equal(result.version, '99.000.000');
+  assert.equal(f.writes.length, 0);
+});
+
+for (const installed of [false, true]) test('private endpoint unavailable does not block ordinary Botty installation: ' + installed, async () => {
+  const f = embeddedFixture(), messages = [];
+  if (installed) await f.previous();
+  f.files.delete('/data/botty/emulation/switch/private-runtime.json');
+  const result = await installNative(f.io, {...f.options, report: message => messages.push(message)});
+  assert.equal(result.updated, installed);
+  assert(f.files.has(NATIVE_ROOT + '/emulation/eboot.bin'));
+  assert(messages.some(message => message.includes('Botty+ installation will continue')));
+});
+
+test('optional Switch integrity failure is visible while native installation continues', async () => {
+  const f=embeddedFixture(),messages=[];
+  f.files.set('/data/botty/emulation/switch/keys/prod.keys',new TextEncoder().encode('damaged'));
+  const original=f.options.fetchFile;
+  f.options.fetchFile=async url => url.startsWith('/private/') ? {ok:true,arrayBuffer:async () => encode({schema:1,private:true,files:decode(f.files.get('/data/botty/emulation/switch/private-runtime.json')).inventory})} : original(url);
+  await installNative(f.io,{...f.options,report:message=>messages.push(message)});
+  assert(messages.some(message=>message.includes('runtime differs')&&message.includes('preserved')));
+  assert(f.files.has(NATIVE_ROOT+'/emulation/eboot.bin'));
 });

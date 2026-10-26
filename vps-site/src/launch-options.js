@@ -1,12 +1,12 @@
 const STORAGE_KEY = 'botty.launch-services.v1';
-const SERVICES = ['ftp', 'rtorrent', 'cheatrunner', 'ppr', 'codex', 'botty'];
+const SERVICES = ['ftp', 'rtorrent', 'cheatrunner', 'ppr', 'codex', 'botty', 'opennow'];
 
 export function supportsPpr(firmware) {
   return /^\d+\.\d{2}$/.test(firmware || '') && Number(firmware) <= 11.40;
 }
 
 export function normalizeLaunchServices(value) {
-  return Object.fromEntries(SERVICES.map(name => [name, ['ppr', 'codex'].includes(name) ? value?.[name] === true : value?.[name] !== false]));
+  return Object.fromEntries(SERVICES.map(name => [name, ['ppr', 'codex', 'opennow'].includes(name) ? value?.[name] === true : value?.[name] !== false]));
 }
 
 export function bindLaunchOptions(document, browser) {
@@ -36,12 +36,15 @@ export function bindLaunchOptions(document, browser) {
     document.getElementById('rtorrent-option').hidden = botty.checked;
     document.getElementById('rtorrent-included').hidden = !botty.checked;
     const selected = read();
+    // Restored patch choices must expose their prerequisites before launch.
+    if (selected.ppr) document.getElementById('launch-advanced').open = true;
     const names = [];
     if (selected.botty) names.push('Botty+ (includes rTorrent)');
     if (selected.ftp) names.push('FTP');
     if (selected.rtorrent && !selected.botty) names.push('rTorrent');
     if (selected.cheatrunner) names.push('CheatRunner');
     if (selected.ppr) names.push('A53 PPR');
+    if (selected.opennow) names.push('OpenNOW PS5');
     if (selected.codex) names.push('Codex PS5');
     document.getElementById('launch-options-summary').textContent = names.join(', ') || 'Jailbreak only';
   };
