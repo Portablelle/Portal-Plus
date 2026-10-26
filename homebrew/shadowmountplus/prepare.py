@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Unpack verified upstream source and apply Botty compatibility patches."""
+"""Unpack verified upstream source and apply Botty's background-storage patch."""
 import hashlib
 import json
 from pathlib import Path

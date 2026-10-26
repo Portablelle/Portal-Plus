@@ -1,62 +1,67 @@
---- a/src/sm_shellcore_service.c
-+++ b/src/sm_shellcore_service.c
-@@ -8,6 +8,7 @@
- #include "sm_filesystem.h"
- #include "sm_fakelib.h"
- #include "sm_game_lifecycle.h"
-+#include "sm_botty_storage_policy.h"
- #include "sm_gameinfo.h"
- #include "sm_image.h"
+--- a/include/sm_botty_rebase.h
++++ b/include/sm_botty_rebase.h
+@@ -0,0 +1,18 @@
++#ifndef SM_BOTTY_REBASE_H
++#define SM_BOTTY_REBASE_H
++#include <stdbool.h>
++#include <stdio.h>
++#include <string.h>
++#include "sm_limits.h"
++// Component-boundary replacement, also used for nested PFSC image paths.
++static inline bool sm_botty_rebase(char value[MAX_PATH], const char *old_root,
++                                   const char *new_root) {
++  size_t n = strlen(old_root);
++  if (strncmp(value, old_root, n) != 0 || (value[n] && value[n] != '/')) return true;
++  char result[MAX_PATH];
++  int length = snprintf(result, sizeof(result), "%s%s", new_root, value + n);
++  if (length < 0 || (size_t)length >= sizeof(result)) return false;
++  memcpy(value, result, (size_t)length + 1);
++  return true;
++}
++#endif
+--- a/include/sm_botty_storage_policy.h
++++ b/include/sm_botty_storage_policy.h
+@@ -0,0 +1,17 @@
++#ifndef SM_BOTTY_STORAGE_POLICY_H
++#define SM_BOTTY_STORAGE_POLICY_H
++#include <stdbool.h>
++#include <string.h>
++// Deliberately restricted to the known manager, never any arbitrary other app.
++static inline bool sm_botty_storage_allowed(const char *target, const char *owner,
++    int active_pid, int owner_pid, bool owner_ready, bool transitioning,
++    bool has_outgoing, bool owns_target) {
++  if (!target || !target[0] || strcmp(target, "PPSA99071") == 0 ||
++      transitioning || has_outgoing || owns_target || active_pid < 0)
++    return false;
++  if (active_pid == 0)
++    return !owner[0];
++  return strcmp(owner, "PPSA99071") == 0 && owner_ready &&
++         owner_pid > 0 && owner_pid == active_pid;
++}
++#endif
+--- a/include/sm_game_lifecycle.h
++++ b/include/sm_game_lifecycle.h
+@@ -3,6 +3,8 @@
+ 
+ #include <stdbool.h>
+ #include <stdint.h>
++#include <sys/types.h>
++pid_t sm_game_lifecycle_storage_pid(void);
  #include "sm_limits.h"
-@@ -507,6 +508,11 @@
  
- static int handle_launch_request(const char *title_id) {
-   pthread_mutex_lock(&g_service.mutex);
-+  // Include unmanaged launches while the Botty worker owns the mutation gate.
-+  if (g_service.external_mutation_in_progress) {
-+    pthread_mutex_unlock(&g_service.mutex);
-+    return EBUSY;
-+  }
-   bool was_busy = launch_preparation_pending_locked();
-   g_service.pending_launch_title_id[0] = '\0';
-   g_service.pending_sandbox_ready_handled = false;
-@@ -972,6 +978,36 @@
-         return true;
-   }
-   return false;
-+}
-+
-+static bool storage_title_allowed_locked(const char *title_id) {
-+  return !runtime_sleep_mode_active() && !g_service.stop_requested &&
-+    sm_botty_storage_allowed(title_id, g_service.prepared.title_id,
-+      sm_game_lifecycle_storage_pid(), g_service.prepared.pid,
-+      g_service.prepared.app_id != 0 && g_service.prepared.sandbox_ready_handled &&
-+        !g_service.prepared.game_exited,
-+      g_service.prepare_in_progress || g_service.launch_pending ||
-+        (g_service.pending_launch_title_id[0] != '\0' && !g_service.pending_sandbox_ready_handled) ||
-+        g_service.releasing_title_id[0] != '\0',
-+      g_service.outgoing.title_id[0] != '\0',
-+      find_mount_owner_locked(title_id) != NULL);
-+}
-+
-+bool sm_shellcore_storage_title_allowed(const char *title_id) {
-+  pthread_mutex_lock(&g_service.mutex);
-+  bool allowed = g_service.external_mutation_in_progress &&
-+                 storage_title_allowed_locked(title_id);
-+  pthread_mutex_unlock(&g_service.mutex);
-+  return allowed;
-+}
-+
-+bool sm_shellcore_try_begin_storage_mutation(const char *title_id) {
-+  pthread_mutex_lock(&g_service.mutex);
-+  bool allowed = !g_service.external_mutation_in_progress &&
-+                 storage_title_allowed_locked(title_id);
-+  if (allowed) g_service.external_mutation_in_progress = true;
-+  pthread_mutex_unlock(&g_service.mutex);
-+  return allowed;
- }
+ // Start the shared game lifecycle watcher used by runtime game features.
+--- a/include/sm_shellcore_service.h
++++ b/include/sm_shellcore_service.h
+@@ -6,6 +6,9 @@
+ #include <sys/types.h>
  
- bool sm_shellcore_try_begin_external_mutation(void) {
+ #include "sm_limits.h"
++
++bool sm_shellcore_try_begin_storage_mutation(const char *title_id);
++bool sm_shellcore_storage_title_allowed(const char *title_id);
+ 
+ // Start/stop the local Unix-socket owner used by the SceShellCore bridge.
+ bool sm_shellcore_service_start(void);
 --- a/src/sm_api_service.c
 +++ b/src/sm_api_service.c
 @@ -1,3 +1,4 @@
@@ -64,7 +69,7 @@
  #include "sm_platform.h"
  
  #include <arpa/inet.h>
-@@ -630,6 +631,7 @@
+@@ -682,6 +683,7 @@
        !append_json_string(capabilities, "delete_game_source") ||
        !append_json_string(capabilities, "unpack_game_image") ||
        !append_json_string(capabilities, "storage_job_status") ||
@@ -72,7 +77,7 @@
        !append_json_string(capabilities, "storage_job_cancel") ||
        !append_json_string(capabilities, "list_manual_sources") ||
        !append_json_string(capabilities, "add_manual_source") ||
-@@ -2457,6 +2459,16 @@
+@@ -3009,6 +3011,16 @@
        !usb_storage_root_mounted(destination)) {
      return false;
    }
@@ -89,7 +94,7 @@
    for (int i = 0; i < get_scan_path_count(); ++i) {
      char scan_path[MAX_PATH];
      if (!get_scan_path(i, scan_path))
-@@ -2542,10 +2554,11 @@
+@@ -3116,10 +3128,11 @@
                                            size_t *affected_out,
                                            const char **error_out) {
    *affected_out = 0;
@@ -103,7 +108,7 @@
      *error_out = "runtime_prepared";
      return EBUSY;
    }
-@@ -2561,6 +2574,36 @@
+@@ -3135,6 +3148,36 @@
      return ENOMEM;
  
    int status = 0;
@@ -140,7 +145,7 @@
    runtime_mount_state_lock();
    for (size_t i = 0; i < count; ++i) {
      game_source_info_t info;
-@@ -2600,34 +2643,51 @@
+@@ -3174,34 +3217,51 @@
        }
      }
    }
@@ -205,7 +210,7 @@
        }
        continue;
      }
-@@ -2637,11 +2697,19 @@
+@@ -3211,11 +3271,19 @@
                          sizeof(tracked_path)) &&
          strcmp(tracked_path, source) == 0 &&
          !write_mount_link(snapshot[i].title_id, destination)) {
@@ -225,26 +230,27 @@
  }
  
  static const char *storage_job_state_name(storage_job_state_t state) {
-@@ -2953,6 +3021,7 @@
+@@ -3576,6 +3644,8 @@
    } else {
      scanner_mutation = true;
    }
-+  if (status == 0 && operation == GAME_STORAGE_COPY && sm_game_lifecycle_has_active_game()) status = EBUSY;
++  if (status == 0 && operation == GAME_STORAGE_COPY &&
++      sm_game_lifecycle_has_active_game()) status = EBUSY;
    if (status == 0 && operation == GAME_STORAGE_UNPACK) {
      const bool read_only = true;
      status = sm_shellcore_mount_title_runtime(title_id, &read_only);
-@@ -2962,7 +3031,9 @@
+@@ -3585,7 +3655,9 @@
      }
    }
    if (status == 0) {
 -    if (!sm_shellcore_try_begin_external_mutation()) {
-+    if (!(operation == GAME_STORAGE_UNPACK
-+              ? sm_shellcore_try_begin_external_mutation()
-+              : sm_shellcore_try_begin_storage_mutation(title_id))) {
++    bool botty_storage = !backport && operation != GAME_STORAGE_UNPACK;
++    if (!(botty_storage ? sm_shellcore_try_begin_storage_mutation(title_id)
++                        : sm_shellcore_try_begin_external_mutation())) {
        status = EBUSY;
        error = "runtime_busy";
      } else
-@@ -3044,6 +3115,18 @@
+@@ -3681,6 +3753,18 @@
      pthread_mutex_unlock(&g_storage_job.mutex);
    }
  
@@ -263,7 +269,7 @@
    if (status == 0) {
      bool renamed = false;
      const char *copy_source = operation == GAME_STORAGE_UNPACK
-@@ -3073,8 +3156,18 @@
+@@ -3714,8 +3798,18 @@
          g_storage_job.processed_files = total_files;
          pthread_mutex_unlock(&g_storage_job.mutex);
        }
@@ -275,7 +281,7 @@
 +            !sm_manual_add_path(destination, &changed) ||
 +            !sm_manual_remove_path(source, &changed)) status = EIO;
 +      }
-+      if (operation == GAME_STORAGE_DELETE) {
++      if (!backport && operation == GAME_STORAGE_DELETE) {
 +        bool changed = false;
 +        if (!sm_manual_remove_path(source, &changed)) status = EIO;
 +        // Keep the missing cache entry so the normal scanner can retire the
@@ -284,7 +290,7 @@
      }
    }
  
-@@ -3124,12 +3217,21 @@
+@@ -3833,12 +3927,20 @@
  static int start_storage_job(const char *title_id,
                               const char *destination_dir,
                               game_storage_operation_t operation,
@@ -296,8 +302,7 @@
    game_source_info_t source_info;
    int status = resolve_storage_source(title_id, operation, &source_info,
                                        error_out);
-+  // A missing source still has a resolved path. Check the caller's precondition
-+  // before allowing the handler to reconcile a missing-source deletion.
++  // Validate missing-source deletions before the handler can queue reconciliation.
 +  if (expected_source &&
 +      (status == 0 || (*error_out && strcmp(*error_out, "source_missing") == 0)) &&
 +      strcmp(expected_source, source_info.physical_path) != 0) {
@@ -307,21 +312,21 @@
    if (status != 0)
      return status;
    if (operation == GAME_STORAGE_UNPACK &&
-@@ -3375,9 +3477,19 @@
- 
+@@ -4844,8 +4946,19 @@
    storage_job_snapshot_t accepted;
    memset(&accepted, 0, sizeof(accepted));
+   const char *error = NULL;
 +  struct json_object *expected_value = NULL;
 +  const char *expected_source = NULL;
 +  if (json_object_object_get_ex(request, "expected_source", &expected_value)) {
 +    if (!json_object_is_type(expected_value, json_type_string) ||
 +        !(expected_source = json_object_get_string(expected_value)) ||
-+        expected_source[0] != '/') {
++        expected_source[0] != '/' ||
++        strlen(expected_source) != (size_t)json_object_get_string_len(expected_value)) {
 +      send_error_response(connection, 400, EINVAL, "Invalid expected source");
 +      return;
 +    }
 +  }
-   const char *error = NULL;
    int status = start_storage_job(title_id, destination_dir, operation,
 -                                 delete_source, &accepted, &error);
 +                                 delete_source, expected_source, &accepted, &error);
@@ -330,7 +335,7 @@
          strcmp(error, "source_missing") == 0) {
 --- a/src/sm_game_lifecycle.c
 +++ b/src/sm_game_lifecycle.c
-@@ -1362,6 +1362,11 @@
+@@ -1351,6 +1351,11 @@
    close_game_lifecycle_wake_pipe();
  }
  
@@ -342,6 +347,65 @@
  bool sm_game_lifecycle_has_active_game(void) {
    return atomic_load(&g_active_game_pid) > 0 ||
           atomic_load(&g_game_exit_handoff_pending);
+--- a/src/sm_shellcore_service.c
++++ b/src/sm_shellcore_service.c
+@@ -8,6 +8,7 @@
+ #include "sm_filesystem.h"
+ #include "sm_fakelib.h"
+ #include "sm_game_lifecycle.h"
++#include "sm_botty_storage_policy.h"
+ #include "sm_gameinfo.h"
+ #include "sm_image.h"
+ #include "sm_limits.h"
+@@ -497,6 +498,11 @@
+ 
+ static int handle_launch_request(const char *title_id) {
+   pthread_mutex_lock(&g_service.mutex);
++  // Block stock as well as managed launches while a worker owns the gate.
++  if (g_service.external_mutation_in_progress) {
++    pthread_mutex_unlock(&g_service.mutex);
++    return EBUSY;
++  }
+   bool was_busy = launch_preparation_pending_locked();
+   g_service.pending_launch_title_id[0] = '\0';
+   g_service.pending_sandbox_ready_handled = false;
+@@ -962,6 +968,36 @@
+         return true;
+   }
+   return false;
++}
++
++static bool storage_title_allowed_locked(const char *title_id) {
++  return !runtime_sleep_mode_active() && !g_service.stop_requested &&
++    sm_botty_storage_allowed(title_id, g_service.prepared.title_id,
++      sm_game_lifecycle_storage_pid(), g_service.prepared.pid,
++      g_service.prepared.app_id != 0 && g_service.prepared.sandbox_ready_handled &&
++        !g_service.prepared.game_exited,
++      g_service.prepare_in_progress || g_service.launch_pending ||
++        (g_service.pending_launch_title_id[0] != '\0' && !g_service.pending_sandbox_ready_handled) ||
++        g_service.releasing_title_id[0] != '\0',
++      g_service.outgoing.title_id[0] != '\0',
++      find_mount_owner_locked(title_id) != NULL);
++}
++
++bool sm_shellcore_storage_title_allowed(const char *title_id) {
++  pthread_mutex_lock(&g_service.mutex);
++  bool allowed = g_service.external_mutation_in_progress &&
++                 storage_title_allowed_locked(title_id);
++  pthread_mutex_unlock(&g_service.mutex);
++  return allowed;
++}
++
++bool sm_shellcore_try_begin_storage_mutation(const char *title_id) {
++  pthread_mutex_lock(&g_service.mutex);
++  bool allowed = !g_service.external_mutation_in_progress &&
++                 storage_title_allowed_locked(title_id);
++  if (allowed) g_service.external_mutation_in_progress = true;
++  pthread_mutex_unlock(&g_service.mutex);
++  return allowed;
+ }
+ 
+ bool sm_shellcore_try_begin_external_mutation(void) {
 --- a/src/sm_storage.c
 +++ b/src/sm_storage.c
 @@ -176,12 +176,12 @@
@@ -370,19 +434,19 @@
    while (result == 0) {
      if (storage_operation_cancelled(cancel, ctx)) {
        errno = ECANCELED;
-@@ -226,6 +228,11 @@
+@@ -225,6 +227,11 @@
+       if (progress)
          progress((uint64_t)write_size, 0, ctx);
      }
-   }
++  }
 +  if (result == 0 && (fstat(source_fd, &after) != 0 ||
 +      fstat(destination_fd, &copied) != 0 || before.st_size != after.st_size ||
 +      before.st_mtime != after.st_mtime || copied.st_size != before.st_size)) {
 +    errno = EIO; result = -1;
-+  }
+   }
    int saved_errno = result != 0 ? errno : 0;
    if (result == 0 && fdatasync(destination_fd) != 0) {
-     result = -1;
-@@ -462,6 +469,11 @@
+@@ -531,6 +538,11 @@
    if (sm_storage_copy_path_progress(source, destination, progress, cancel,
                                      ctx) != 0)
      return -1;
@@ -394,67 +458,3 @@
    if (storage_operation_cancelled(cancel, ctx) ||
        (begin_finalize && !begin_finalize(ctx)) ||
        storage_operation_cancelled(NULL, NULL)) {
---- a/include/sm_shellcore_service.h
-+++ b/include/sm_shellcore_service.h
-@@ -6,6 +6,9 @@
- #include <sys/types.h>
- 
- #include "sm_limits.h"
-+
-+bool sm_shellcore_try_begin_storage_mutation(const char *title_id);
-+bool sm_shellcore_storage_title_allowed(const char *title_id);
- 
- // Start/stop the local Unix-socket owner used by the SceShellCore bridge.
- bool sm_shellcore_service_start(void);
---- a/include/sm_game_lifecycle.h
-+++ b/include/sm_game_lifecycle.h
-@@ -4,6 +4,8 @@
- #include <stdbool.h>
- #include <stdint.h>
- #include "sm_limits.h"
-+#include <sys/types.h>
-+pid_t sm_game_lifecycle_storage_pid(void);
- 
- // Start the shared game lifecycle watcher used by runtime game features.
- bool start_game_lifecycle_watcher(void);
---- a/include/sm_botty_storage_policy.h
-+++ b/include/sm_botty_storage_policy.h
-@@ -0,0 +1,17 @@
-+#ifndef SM_BOTTY_STORAGE_POLICY_H
-+#define SM_BOTTY_STORAGE_POLICY_H
-+#include <stdbool.h>
-+#include <string.h>
-+// Deliberately restricted to the known manager, never any arbitrary other app.
-+static inline bool sm_botty_storage_allowed(const char *target, const char *owner,
-+    int active_pid, int owner_pid, bool owner_ready, bool transitioning,
-+    bool has_outgoing, bool owns_target) {
-+  if (!target || !target[0] || strcmp(target, "PPSA99071") == 0 ||
-+      transitioning || has_outgoing || owns_target || active_pid < 0)
-+    return false;
-+  if (active_pid == 0)
-+    return !owner[0];
-+  return strcmp(owner, "PPSA99071") == 0 && owner_ready &&
-+         owner_pid > 0 && owner_pid == active_pid;
-+}
-+#endif
---- a/include/sm_botty_rebase.h
-+++ b/include/sm_botty_rebase.h
-@@ -0,0 +1,18 @@
-+#ifndef SM_BOTTY_REBASE_H
-+#define SM_BOTTY_REBASE_H
-+#include <stdbool.h>
-+#include <stdio.h>
-+#include <string.h>
-+#include "sm_limits.h"
-+// Component-boundary replacement, also used for nested PFSC image paths.
-+static inline bool sm_botty_rebase(char value[MAX_PATH], const char *old_root,
-+                                   const char *new_root) {
-+  size_t n = strlen(old_root);
-+  if (strncmp(value, old_root, n) != 0 || (value[n] && value[n] != '/')) return true;
-+  char result[MAX_PATH];
-+  int length = snprintf(result, sizeof(result), "%s%s", new_root, value + n);
-+  if (length < 0 || (size_t)length >= sizeof(result)) return false;
-+  memcpy(value, result, (size_t)length + 1);
-+  return true;
-+}
-+#endif

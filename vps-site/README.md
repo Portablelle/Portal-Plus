@@ -127,8 +127,12 @@ object pool mismatch. The kernel stage combines an address leak with an
 Upstream revision is recorded in `manifest.json` and in the repository's
 `Relapse-Exploit` submodule. Preserve the upstream `LICENSE` and attribution.
 
-The bundled ShadowMountPlus `1.7beta7-botty.1` includes Botty's guarded TitleDir
-recovery, pinned ShellCore hooks and guarded background storage operations while Botty+ is active, alongside upstream beta7 hook recovery, sandbox ownership, HTTP recovery and external-storage fixes. This version still needs console acceptance with the bundled Kstuff Lite. Its [notice](payloads/shadowmountplus-NOTICE.md),
+The bundled ShadowMountPlus `1.7beta8-botty.1` adds the upstream TV/gamepad
+web UI, PKG/patch/DLC and backport management, plus broader PS4/homebrew support.
+It preserves Botty's guarded background storage operations, exact source checks,
+ShellCore hook validation/page locks and filtered-cache fallback on read-only
+media. Kstuff Lite remains v1.11. This upstream version is a prerelease and still
+needs console acceptance. Its [notice](payloads/shadowmountplus-NOTICE.md),
 [GPL license](payloads/shadowmountplus-LICENSE.txt) and
 [complete corresponding source](payloads/shadowmountplus-source.tar.gz)
 are included in this portal.
