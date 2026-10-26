@@ -81,7 +81,7 @@ If an older service is running, LAUNCH stages 1.5.1 without stopping its work;
 start a fresh console session and LAUNCH to activate it.
 
 Native 01.004.000, rTorrent 0.16.24-botty4
-and ShadowMountPlus 1.7beta4-botty.2 retain their existing versions. Existing Transmission installations need an
+and ShadowMountPlus 1.7beta8-botty.1 retain their existing versions. Existing Transmission installations need an
 explicit migration before rTorrent can start; keep original metadata and downloads.
 The separate artwork service must also be updated to obtain the blank-cover fix.
 
@@ -128,8 +128,10 @@ object pool mismatch. The kernel stage combines an address leak with an
 Upstream revision is recorded in `manifest.json` and in the repository's
 `Relapse-Exploit` submodule. Preserve the upstream `LICENSE` and attribution.
 
-The bundled ShadowMountPlus `1.7beta4-botty.2` includes Botty's guarded TitleDir
-recovery, pinned ShellCore hooks and guarded background storage operations while Botty+ is active. Its [notice](payloads/shadowmountplus-NOTICE.md),
+The bundled ShadowMountPlus `1.7beta8-botty.1` includes the upstream TV/gamepad
+web UI, PKG/patch/DLC and backport management, sandbox/USB recovery and retained
+ShellCore hook pages. It preserves Botty's guarded background storage operations
+and expected-source checks. This upstream version is a prerelease. Its [notice](payloads/shadowmountplus-NOTICE.md),
 [GPL license](payloads/shadowmountplus-LICENSE.txt) and
 [complete corresponding source](payloads/shadowmountplus-source.tar.gz)
 are included in this portal.

@@ -1,9 +1,9 @@
 # Modified ShadowMountPlus
 
-Version: 1.7beta4-botty.2
+Version: 1.7beta8-botty.1
 
-Upstream: https://github.com/drakmor/ShadowMountPlus, revision `d7e35e6ce90abc6f9d0880ff40c2a5cc1fbfa075`.
+Upstream: https://github.com/drakmor/ShadowMountPlus, revision `f640b3b9bf477eaedecf362bb2ed06e207881463`.
 
-Botty modification: guarded automatic TitleDir hook recovery and transient read handling; resident ShellCore hook pages; legacy Kstuff runtime toggles disabled for the bundled Lite implementation; guarded background storage operations while Botty+ is active, with progress and moved-image path rebasing. This is not the unmodified upstream release.
+Botty modification: guarded background storage operations while Botty+ is active, expected-source validation, verified cross-volume copies and moved-image path rebasing. Hook recovery, page retention and removal of legacy Kstuff control are now supplied by upstream. This is not the unmodified upstream release.
 
 GPL-3.0 license: [license](shadowmountplus-LICENSE.txt). Complete pinned source, patch, build recipe, tests and SDK stub license: [corresponding source](shadowmountplus-source.tar.gz).
