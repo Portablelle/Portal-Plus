@@ -100,3 +100,48 @@ test('failed rTorrent startup is reported after bounded polling',async()=>{
   await assert.rejects(installAndStart(f.io,f.options),/rTorrent did not start/);
   assert.equal(waits,80);assert.equal(f.events.filter(([event])=>event==='launch').length,1);
 });
+
+async function seedInstalled(f) {
+  for(const file of manifest.files)f.files.set(ROOT+'/'+manifest.id+'/'+file.path,
+    new Uint8Array(await readFile(new URL('../vps-site/apps/rtorrent/'+file.path,import.meta.url))));
+}
+
+test('installed rTorrent starts without downloading or rewriting verified package files',async()=>{
+  const f=fixture();await seedInstalled(f);
+  await installAndStart(f.io,f.options);
+  assert.deepEqual(f.downloads,['./apps/rtorrent/manifest.json']);
+  assert.ok(!f.writes.some(path=>path.startsWith(ROOT+'/'+manifest.id+'/')));
+  assert.equal(f.events.filter(([event])=>event==='launch').length,1);
+  assert.deepEqual(f.files.get(STATE+'/rtorrent.rc'),f.files.get(ROOT+'/'+manifest.id+'/rtorrent.rc'));
+});
+
+for(const name of ['rtorrent.elf','rtorrent.rc','cacert.pem'])test('corrupt installed file alone is downloaded and repaired: '+name,async()=>{
+  const f=fixture();await seedInstalled(f);
+  f.files.get(ROOT+'/'+manifest.id+'/'+name)[0]^=1;
+  await installAndStart(f.io,f.options);
+  assert.deepEqual(f.downloads,['./apps/rtorrent/manifest.json','./apps/rtorrent/'+name]);
+  assert.deepEqual(f.writes.filter(path=>path.startsWith(ROOT+'/'+manifest.id+'/')),[ROOT+'/'+manifest.id+'/'+name]);
+  assert.equal(f.events.filter(([event])=>event==='launch').length,1);
+});
+
+test('corrupt repair download preserves installed files and never launches',async()=>{
+  const f=fixture({corrupt:'rtorrent.elf'});await seedInstalled(f);
+  f.files.get(ROOT+'/'+manifest.id+'/rtorrent.elf')[0]^=1;
+  await assert.rejects(installAndStart(f.io,f.options),/verification failed/);
+  assert.deepEqual(f.writes,[]);assert.deepEqual(f.events,[]);
+});
+
+test('failed cache read downloads a verified replacement before starting',async()=>{
+  const f=fixture();await seedInstalled(f);
+  const path=ROOT+'/'+manifest.id+'/rtorrent.elf';
+  const read=f.io.readFile;
+  let failed=false;
+  f.io.readFile=async(name,limit)=>{
+    if(name===path&&!failed){failed=true;throw Error('File exceeds expected size: '+path);}
+    return read(name,limit);
+  };
+  await installAndStart(f.io,f.options);
+  assert.deepEqual(f.downloads,['./apps/rtorrent/manifest.json','./apps/rtorrent/rtorrent.elf']);
+  assert.deepEqual(f.writes.filter(name=>name.startsWith(ROOT+'/'+manifest.id+'/')),[path]);
+  assert.equal(f.events.filter(([event])=>event==='launch').length,1);
+});
