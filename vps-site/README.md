@@ -80,7 +80,7 @@ upload, extraction, compression and other firmwares remain unvalidated on hardwa
 If an older service is running, LAUNCH stages 1.5.1 without stopping its work;
 start a fresh console session and LAUNCH to activate it.
 
-Native 01.004.000 and rTorrent 0.16.24-botty4 retain their existing versions. ShadowMountPlus is now 1.7beta7-botty.1. Existing Transmission installations need an
+Native 01.004.000 and rTorrent 0.16.24-botty4 retain their existing versions. ShadowMountPlus is now 1.7beta10-botty.1. Existing Transmission installations need an
 explicit migration before rTorrent can start; keep original metadata and downloads.
 The separate artwork service must also be updated to obtain the blank-cover fix.
 
@@ -127,8 +127,11 @@ object pool mismatch. The kernel stage combines an address leak with an
 Upstream revision is recorded in `manifest.json` and in the repository's
 `Relapse-Exploit` submodule. Preserve the upstream `LICENSE` and attribution.
 
-The bundled ShadowMountPlus `1.7beta8-botty.1` adds the upstream TV/gamepad
+The bundled ShadowMountPlus `1.7beta10-botty.1` adds the upstream TV/gamepad
 web UI, PKG/patch/DLC and backport management, plus broader PS4/homebrew support.
+It also includes SMB shares with guest/auth and read-only modes, safe USB
+ejection, and upstream scans/operations on other games during gameplay. FPKG
+games are no longer forcibly closed when entering Rest Mode.
 It preserves Botty's guarded background storage operations, exact source checks,
 ShellCore hook validation/page locks and filtered-cache fallback on read-only
 media. Kstuff Lite remains v1.11. This upstream version is a prerelease and still

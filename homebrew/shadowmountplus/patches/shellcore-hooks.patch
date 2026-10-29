@@ -1,6 +1,8 @@
+diff --git a/src/sm_shellcore_hooks.c b/src/sm_shellcore_hooks.c
+index 36dc3a1..32bb6b6 100644
 --- a/src/sm_shellcore_hooks.c
 +++ b/src/sm_shellcore_hooks.c
-@@ -110,6 +110,7 @@
+@@ -110,6 +110,7 @@ typedef struct {
    uintptr_t bridge_address;
    size_t bridge_size;
    size_t hook_count;
@@ -8,7 +10,7 @@
    shellcore_hook_record_t hooks[SHELLCORE_MAX_HOOK_COUNT];
  } shellcore_hooks_state_t;
  
-@@ -567,6 +568,45 @@
+@@ -567,6 +568,45 @@ static bool populate_bridge(const shellcore_hooks_state_t *hooks,
    return true;
  }
  
@@ -54,7 +56,7 @@
  static bool install_hooks_for_pid(pid_t pid) {
    const size_t base_blob_size =
        (size_t)(sm_shellcore_bridge_base_end -
-@@ -627,14 +667,8 @@
+@@ -627,14 +667,8 @@ static bool install_hooks_for_pid(pid_t pid) {
     * Retain the cave and every patched text page before changing any bytes.
     * Keep them for ShellCore's lifetime: shutdown retains an inactive cave that
     * a thread may still be executing, and replacements reuse the same pages. */
@@ -71,7 +73,7 @@
        log_debug("  [SHELLCORE] could not retain hook pages; hooks not installed");
        goto done;
      }
-@@ -750,6 +784,7 @@
+@@ -750,6 +784,7 @@ static bool install_hooks_for_pid(pid_t pid) {
      }
    }
  
@@ -79,7 +81,7 @@
    hooks.status = SHELLCORE_HOOKS_READY;
    hooks.enabled = true;
    ok = true;
-@@ -796,39 +831,42 @@
+@@ -796,39 +831,42 @@ static bool hook_installed(pid_t pid, size_t index) {
    const shellcore_hook_record_t *hook = &g_hooks.hooks[index];
    uintptr_t target = g_hooks.remote.targets[hook->target];
    uintptr_t destination = remote_bridge_symbol(k_hook_symbols[index]);
@@ -99,8 +101,29 @@
 -  uint8_t bridge[SM_SHELLCORE_BRIDGE_MAX_BLOB_SIZE];
 -  if (g_hooks.bridge_size > sizeof(bridge) ||
 -      !populate_bridge(&g_hooks, bridge)) {
--    return false;
--  }
++  uint8_t current[SM_SHELLCORE_BRIDGE_MAX_BLOB_SIZE];
++  if (!g_hooks.bridge_size || g_hooks.bridge_size > sizeof(current) ||
++      !sm_remote_process_read(pid, g_hooks.bridge_address, current,
++                              g_hooks.bridge_size))
+     return false;
++  const uint8_t *const slots[] = {
++      sm_shellcore_bridge_install_title_id_0,
++      sm_shellcore_bridge_install_title_id_1,
++      sm_shellcore_bridge_install_dir_0,
++      sm_shellcore_bridge_install_dir_1,
++      sm_shellcore_bridge_install_armed,
++  };
++  for (size_t i = 0; g_hooks.hook_count == SHELLCORE_MAX_HOOK_COUNT &&
++                     i < sizeof(slots) / sizeof(slots[0]); ++i) {
++    size_t offset = 0;
++    size_t size = i == 4 ? 1 : sizeof(uint64_t);
++    if (!bridge_symbol_offset(slots[i], size, g_hooks.bridge_size, &offset))
++      return false;
++    // A previous request must have been disarmed before reattaching the hook.
++    if (i == 4 && current[offset] != 0)
++      return false;
++    memcpy(current + offset, g_hooks.expected_bridge + offset, size);
+   }
 -  // Title/dir immediates are mutable. Code, imports, trampolines and the
 -  // disarmed flag must still match the bridge installed in this process.
 -  if (g_hooks.hook_count == SHELLCORE_MAX_HOOK_COUNT) {
@@ -122,34 +145,11 @@
 -  }
 -  return verify_remote_bytes(pid, g_hooks.bridge_address, bridge,
 -                             g_hooks.bridge_size);
-+  uint8_t current[SM_SHELLCORE_BRIDGE_MAX_BLOB_SIZE];
-+  if (!g_hooks.bridge_size || g_hooks.bridge_size > sizeof(current) ||
-+      !sm_remote_process_read(pid, g_hooks.bridge_address, current,
-+                              g_hooks.bridge_size))
-+    return false;
-+  const uint8_t *const slots[] = {
-+      sm_shellcore_bridge_install_title_id_0,
-+      sm_shellcore_bridge_install_title_id_1,
-+      sm_shellcore_bridge_install_dir_0,
-+      sm_shellcore_bridge_install_dir_1,
-+      sm_shellcore_bridge_install_armed,
-+  };
-+  for (size_t i = 0; g_hooks.hook_count == SHELLCORE_MAX_HOOK_COUNT &&
-+                     i < sizeof(slots) / sizeof(slots[0]); ++i) {
-+    size_t offset = 0;
-+    size_t size = i == 4 ? 1 : sizeof(uint64_t);
-+    if (!bridge_symbol_offset(slots[i], size, g_hooks.bridge_size, &offset))
-+      return false;
-+    // A previous request must have been disarmed before reattaching the hook.
-+    if (i == 4 && current[offset] != 0)
-+      return false;
-+    memcpy(current + offset, g_hooks.expected_bridge + offset, size);
-+  }
 +  return memcmp(current, g_hooks.expected_bridge, g_hooks.bridge_size) == 0;
  }
  
  // Caller owns g_install_mutex. Restore only our own missing patches, never
-@@ -862,6 +900,7 @@
+@@ -862,6 +900,7 @@ static bool refresh_hooks_locked(void) {
    if (!sm_shellcore_remote_resolve(pid, &remote) ||
        remote.image_base != g_hooks.remote.image_base ||
        remote.offsets != g_hooks.remote.offsets ||

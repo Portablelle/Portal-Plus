@@ -5,6 +5,14 @@
 #include "sm_platform.h"
 #include "sm_runtime.h"
 #include "sm_path_utils.h"
+#include "sm_smb.h"
+// This harness exercises local cross-volume copies; SMB needs a live server.
+int sm_smb_normalize(const char *path, char out[MAX_PATH]) {
+  (void)path; (void)out; return EINVAL;
+}
+bool sm_smb_path_within(const char *path, const char *root) {
+  (void)path; (void)root; return false;
+}
 bool should_stop_requested(void) { return false; }
 bool runtime_sleep_mode_active(void) { return false; }
 bool path_matches_root_or_child(const char *path, const char *root) {

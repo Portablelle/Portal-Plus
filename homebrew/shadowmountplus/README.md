@@ -1,10 +1,16 @@
-# ShadowMountPlus 1.7beta8-botty.1
+# ShadowMountPlus 1.7beta10-botty.1
 
-Modified upstream [1.7beta8](https://github.com/drakmor/ShadowMountPlus/releases/tag/1.7beta8),
-a prerelease pinned to `f640b3b9bf477eaedecf362bb2ed06e207881463`.
+Modified upstream [1.7beta10](https://github.com/drakmor/ShadowMountPlus/releases/tag/1.7beta10),
+a prerelease pinned to `a8e400487effa1a63c81943ad16fef2d9ea83cfb`.
 Portal+ delivers this payload; its version is independent of Botty+ and Portal+.
 
 ## Upstream improvements
+
+Beta9 adds SMB shares and improves network transfers. Beta10 adds safe USB
+ejection, scans and operations on other games during gameplay, SMB guest/auth
+selection and read-only connections. It no longer forcibly closes FPKG games
+when entering Rest Mode. Botty's guarded source operations retain the admission
+policy described below; upstream web operations retain active-game protection.
 
 The upgrade from beta7 includes the TV/gamepad web interface, local and streamed
 PKG installation, installed patch/DLC information and individual removal,
@@ -48,7 +54,7 @@ files and compare sizes/tree totals before removing the source, with a 512 MiB
 free-space reserve. This is not a full content hash check. Interrupted operations
 can require reconciliation; preserve Botty's uncertain journal and retained files.
 
-Beta8 shares its worker with backport operations. Those retain upstream admission
+The current release shares its worker with backport operations. Those retain upstream admission
 and metadata handling; Botty game-source records must not be changed by backport
 deletion. Copy jobs retain the existing idle-only restriction. Compression
 activation/verification still uses its existing API and waiting workflow.
@@ -71,7 +77,8 @@ docker run --rm --platform linux/amd64 -v "$PWD:/work" portal-shadowmount-build:
 process-memory doubles. It checks lost-hook recovery, foreign/changed code,
 transient reads, armed requests, partial writes, rollback/detach failures,
 concurrent registration and hook-page retention failures. Filtered-cache tests
-cover read-only cleanup and copy failures. It also checks storage
+cover read-only cleanup and copy failures. The local-copy harness rejects SMB
+paths; it does not establish SMB server interoperability. It also checks storage
 policy, nested-image rebasing, cross-volume source preservation and concurrent
 configuration reloads. The config harness is adapted from upstream's stale test
 to remove assertions for the deleted Kstuff pause functions.

@@ -13,6 +13,7 @@ ${CC:-cc} -std=c11 -Wall -Wextra -Werror -Ibuild/include tests/test_image_rebase
 ./build/test-image-rebase
 
 python3 tests/test_storage_admission.py
+python3 tests/test_storage_capacity.py
 
 ${CC:-cc} -std=gnu11 -O2 -Wall -Wextra -Werror -pthread -ffunction-sections \
   -Wl,--gc-sections -Ibuild/include tests/test_runtime_config.c -o build/test-runtime-config

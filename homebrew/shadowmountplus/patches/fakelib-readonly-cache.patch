@@ -1,6 +1,23 @@
+diff --git a/include/sm_filesystem.h b/include/sm_filesystem.h
+index 13fa9d5..e457533 100644
+--- a/include/sm_filesystem.h
++++ b/include/sm_filesystem.h
+@@ -78,6 +78,10 @@ void cleanup_usb_mount_links_for_suspend(void);
+ int copy_dir(const char *src, const char *dst);
+ // Merge a directory tree and set mode as each destination entry is created.
+ int copy_dir_with_mode(const char *src, const char *dst, mode_t mode);
++// Same overlay copier, excluding one filename only at the source root.
++int copy_dir_with_mode_excluding_root(const char *src, const char *dst,
++                                      mode_t mode, const char *excluded_name);
++
+ // Copy a single file.
+ int copy_file(const char *src, const char *dst);
+ // Copy a single file and set its mode immediately after creation.
+diff --git a/src/sm_fakelib.c b/src/sm_fakelib.c
+index b564281..c28d434 100644
 --- a/src/sm_fakelib.c
 +++ b/src/sm_fakelib.c
-@@ -868,6 +868,9 @@
+@@ -885,6 +885,9 @@ static bool compute_tree_signature(const char *root, const char *relative_root,
        continue;
      }
  
@@ -10,7 +27,7 @@
      char relative_path[MAX_PATH];
      char full_path[MAX_PATH];
      int relative_len =
-@@ -1535,24 +1538,18 @@
+@@ -1552,24 +1555,18 @@ static bool remove_fakelib_kernel(const char *source_path) {
    }
    if (unlink(path) == 0 || errno == ENOENT)
      return true;
@@ -43,9 +60,11 @@
    if (mkdir(destination, 0777) != 0 && errno != EEXIST)
      return false;
    size_t count = flags & FAKELIB_CACHE_PACKAGE ? 3u : 5u;
+diff --git a/src/sm_filesystem.c b/src/sm_filesystem.c
+index b4d6baf..fedf559 100644
 --- a/src/sm_filesystem.c
 +++ b/src/sm_filesystem.c
-@@ -1171,7 +1171,7 @@
+@@ -1186,7 +1186,7 @@ static int remove_copy_path(const char *path) {
  
  static int copy_dir_impl(const char *src, const char *dst, bool set_mode,
                           mode_t mode, bool overlay, char *buffer,
@@ -54,7 +73,7 @@
    if (mkdir(dst, set_mode ? mode : 0777) != 0) {
      if (errno != EEXIST)
        return -1;
-@@ -1200,6 +1200,8 @@
+@@ -1215,6 +1215,8 @@ static int copy_dir_impl(const char *src, const char *dst, bool set_mode,
      }
      if (!strcmp(e->d_name, ".") || !strcmp(e->d_name, ".."))
        continue;
@@ -63,7 +82,7 @@
      int src_written = snprintf(ss, sizeof(ss), "%s/%s", src, e->d_name);
      int dst_written = snprintf(dd, sizeof(dd), "%s/%s", dst, e->d_name);
      if (src_written < 0 || (size_t)src_written >= sizeof(ss) ||
-@@ -1247,7 +1249,7 @@
+@@ -1262,7 +1264,7 @@ static int copy_dir_impl(const char *src, const char *dst, bool set_mode,
      }
      if (S_ISDIR(st.st_mode)) {
        if (copy_dir_impl(ss, dd, set_mode, mode, overlay, buffer,
@@ -72,7 +91,7 @@
          ret = -1;
          break;
        }
-@@ -1270,13 +1272,14 @@
+@@ -1285,13 +1287,14 @@ static int copy_dir_impl(const char *src, const char *dst, bool set_mode,
  }
  
  static int copy_dir_with_options(const char *src, const char *dst,
@@ -89,7 +108,7 @@
    free(buffer);
    return ret;
  }
-@@ -1290,11 +1293,16 @@
+@@ -1305,11 +1308,16 @@ int copy_file_with_mode(const char *src, const char *dst, mode_t mode) {
  }
  
  int copy_dir(const char *src, const char *dst) {
@@ -108,16 +127,3 @@
  }
  
  int remount_system_ex(void) {
---- a/include/sm_filesystem.h
-+++ b/include/sm_filesystem.h
-@@ -76,6 +76,10 @@
- int copy_dir(const char *src, const char *dst);
- // Merge a directory tree and set mode as each destination entry is created.
- int copy_dir_with_mode(const char *src, const char *dst, mode_t mode);
-+// Same overlay copier, excluding one filename only at the source root.
-+int copy_dir_with_mode_excluding_root(const char *src, const char *dst,
-+                                      mode_t mode, const char *excluded_name);
-+
- // Copy a single file.
- int copy_file(const char *src, const char *dst);
- // Copy a single file and set its mode immediately after creation.
