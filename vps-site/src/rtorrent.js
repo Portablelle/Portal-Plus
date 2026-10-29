@@ -25,11 +25,19 @@ export async function installAndStart(io,options={}) {
   const staged=[];
   for(const file of manifest.files){
     if(!allowed.includes(file.path)||!Number.isInteger(file.size)||file.size<1||file.size>MAX_ELF_BYTES||!/^[a-f0-9]{64}$/.test(file.sha256))throw Error('Invalid rTorrent package entry.');
-    const result=await fetchFile(BASE+file.path,{cache:'no-store'});if(!result.ok)throw Error('rTorrent download failed.');
-    const data=new Uint8Array(await result.arrayBuffer());if(data.length!==file.size||await digest(data)!==file.sha256)throw Error('rTorrent file verification failed.');staged.push({file,data});
+    // Reuse only bytes verified against the pinned manifest, never an install marker.
+    let data;
+    try { data=await io.readFile(ROOT+'/'+VERSION+'/'+file.path,MAX_ELF_BYTES); }
+    catch { /* Unreadable or oversized cache entries must be repaired too. */ }
+    const installed=!!data&&data.length===file.size&&await digest(data)===file.sha256;
+    if(!installed){
+      const result=await fetchFile(BASE+file.path,{cache:'no-store'});if(!result.ok)throw Error('rTorrent download failed.');
+      data=new Uint8Array(await result.arrayBuffer());if(data.length!==file.size||await digest(data)!==file.sha256)throw Error('rTorrent file verification failed.');
+    }
+    staged.push({file,data,installed});
   }
   for(const directory of [ROOT+'/'+VERSION,STATE+'/session',STATE+'/incoming','/data/botty/downloads/complete'])await io.mkdirs(directory);
-  for(const {file,data} of staged){const path=ROOT+'/'+VERSION+'/'+file.path;await io.writeFile(path,data);const disk=await io.readFile(path,file.size);if(!disk||await digest(disk)!==file.sha256)throw Error('rTorrent installation verification failed.');}
+  for(const {file,data,installed} of staged){if(installed)continue;const path=ROOT+'/'+VERSION+'/'+file.path;await io.writeFile(path,data);const disk=await io.readFile(path,file.size);if(!disk||await digest(disk)!==file.sha256)throw Error('rTorrent installation verification failed.');}
   let credentials=await io.readFile(STATE+'/botty-credentials.json',4096);
   if(!credentials){credentials=await io.readFile('/data/botty/transmission/state/botty-credentials.json',4096);if(!credentials)credentials=enc.encode(JSON.stringify({username:'botty',password:shortPassword()}));await io.writeFile(STATE+'/botty-credentials.json',credentials,true);}
   const auth=JSON.parse(dec.decode(credentials));if(auth.username!=='botty'||!/^([A-Za-z0-9]{6}|[a-f0-9]{32})$/.test(auth.password))throw Error('Invalid saved Botty credentials.');
