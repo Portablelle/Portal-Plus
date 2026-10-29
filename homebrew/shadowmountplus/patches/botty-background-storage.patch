@@ -1,4 +1,7 @@
---- a/include/sm_botty_rebase.h
+diff --git a/include/sm_botty_rebase.h b/include/sm_botty_rebase.h
+new file mode 100644
+index 0000000..84e6a49
+--- /dev/null
 +++ b/include/sm_botty_rebase.h
 @@ -0,0 +1,18 @@
 +#ifndef SM_BOTTY_REBASE_H
@@ -19,7 +22,10 @@
 +  return true;
 +}
 +#endif
---- a/include/sm_botty_storage_policy.h
+diff --git a/include/sm_botty_storage_policy.h b/include/sm_botty_storage_policy.h
+new file mode 100644
+index 0000000..0671e6d
+--- /dev/null
 +++ b/include/sm_botty_storage_policy.h
 @@ -0,0 +1,17 @@
 +#ifndef SM_BOTTY_STORAGE_POLICY_H
@@ -39,6 +45,8 @@
 +         owner_pid > 0 && owner_pid == active_pid;
 +}
 +#endif
+diff --git a/include/sm_game_lifecycle.h b/include/sm_game_lifecycle.h
+index fce7d19..b2e385d 100644
 --- a/include/sm_game_lifecycle.h
 +++ b/include/sm_game_lifecycle.h
 @@ -3,6 +3,8 @@
@@ -50,18 +58,22 @@
  #include "sm_limits.h"
  
  // Start the shared game lifecycle watcher used by runtime game features.
+diff --git a/include/sm_shellcore_service.h b/include/sm_shellcore_service.h
+index bcd413e..6b95755 100644
 --- a/include/sm_shellcore_service.h
 +++ b/include/sm_shellcore_service.h
-@@ -6,6 +6,9 @@
- #include <sys/types.h>
+@@ -7,6 +7,9 @@
  
  #include "sm_limits.h"
-+
+ 
 +bool sm_shellcore_try_begin_storage_mutation(const char *title_id);
 +bool sm_shellcore_storage_title_allowed(const char *title_id);
- 
++
  // Start/stop the local Unix-socket owner used by the SceShellCore bridge.
  bool sm_shellcore_service_start(void);
+ void sm_shellcore_service_stop(void);
+diff --git a/src/sm_api_service.c b/src/sm_api_service.c
+index 5d36849..991f75b 100644
 --- a/src/sm_api_service.c
 +++ b/src/sm_api_service.c
 @@ -1,3 +1,4 @@
@@ -69,7 +81,7 @@
  #include "sm_platform.h"
  
  #include <arpa/inet.h>
-@@ -682,6 +683,7 @@
+@@ -715,6 +716,7 @@ static void handle_version(struct MHD_Connection *fd) {
        !append_json_string(capabilities, "delete_game_source") ||
        !append_json_string(capabilities, "unpack_game_image") ||
        !append_json_string(capabilities, "storage_job_status") ||
@@ -77,7 +89,7 @@
        !append_json_string(capabilities, "storage_job_cancel") ||
        !append_json_string(capabilities, "list_manual_sources") ||
        !append_json_string(capabilities, "add_manual_source") ||
-@@ -3009,6 +3011,16 @@
+@@ -3233,6 +3235,16 @@ static bool destination_is_managed(const char *destination) {
        !usb_storage_root_mounted(destination)) {
      return false;
    }
@@ -94,7 +106,7 @@
    for (int i = 0; i < get_scan_path_count(); ++i) {
      char scan_path[MAX_PATH];
      if (!get_scan_path(i, scan_path))
-@@ -3116,10 +3128,11 @@
+@@ -3349,10 +3361,11 @@ static int release_storage_source_runtime(const char *physical_path,
                                            size_t *affected_out,
                                            const char **error_out) {
    *affected_out = 0;
@@ -108,7 +120,7 @@
      *error_out = "runtime_prepared";
      return EBUSY;
    }
-@@ -3135,6 +3148,36 @@
+@@ -3368,6 +3381,36 @@ static int release_storage_source_runtime(const char *physical_path,
      return ENOMEM;
  
    int status = 0;
@@ -145,7 +157,7 @@
    runtime_mount_state_lock();
    for (size_t i = 0; i < count; ++i) {
      game_source_info_t info;
-@@ -3174,34 +3217,51 @@
+@@ -3407,8 +3450,14 @@ static int release_storage_source_runtime(const char *physical_path,
        }
      }
    }
@@ -157,21 +169,28 @@
 +        path_matches_root_or_child(mounts[i].f_mntfromname, physical_path)) status = EBUSY;
    runtime_mount_state_unlock();
 -  return 0;
--}
--
--static void update_moved_source_links(const char *source,
 +  return status;
-+}
-+
+ }
+ 
+ static int release_browser_source_runtime(const char *path, size_t *affected_out,
+@@ -3434,34 +3483,45 @@ static int release_browser_source_runtime(const char *path, size_t *affected_out
+   return status;
+ }
+ 
+-static void update_moved_source_links(const char *source,
 +static bool update_moved_source_links(const char *source,
                                        const char *destination) {
+   if (sm_smb_path(destination)) {
+     cleanup_mount_links_for_source_unmount(source);
+-    return;
++    return true;
+   }
    sm_game_cache_snapshot_entry_t *snapshot = NULL;
    size_t count = 0;
    if (!sm_game_cache_snapshot(&snapshot, &count))
 -    return;
--
 +    return false;
-+
+ 
 +  bool ok = true;
    for (size_t i = 0; i < count; ++i) {
      char image_chain[MAX_IMAGE_CHAIN_DEPTH][MAX_PATH];
@@ -210,7 +229,7 @@
        }
        continue;
      }
-@@ -3211,11 +3271,19 @@
+@@ -3471,11 +3531,19 @@ static void update_moved_source_links(const char *source,
                          sizeof(tracked_path)) &&
          strcmp(tracked_path, source) == 0 &&
          !write_mount_link(snapshot[i].title_id, destination)) {
@@ -230,7 +249,7 @@
  }
  
  static const char *storage_job_state_name(storage_job_state_t state) {
-@@ -3576,6 +3644,8 @@
+@@ -4095,6 +4163,8 @@ static void *storage_job_thread_main(void *arg) {
    } else {
      scanner_mutation = true;
    }
@@ -239,7 +258,7 @@
    if (status == 0 && operation == GAME_STORAGE_UNPACK) {
      const bool read_only = true;
      status = sm_shellcore_mount_title_runtime(title_id, &read_only);
-@@ -3585,7 +3655,9 @@
+@@ -4104,7 +4174,9 @@ static void *storage_job_thread_main(void *arg) {
      }
    }
    if (status == 0) {
@@ -250,7 +269,7 @@
        status = EBUSY;
        error = "runtime_busy";
      } else
-@@ -3681,6 +3753,18 @@
+@@ -4227,6 +4299,19 @@ static void *storage_job_thread_main(void *arg) {
      pthread_mutex_unlock(&g_storage_job.mutex);
    }
  
@@ -259,17 +278,18 @@
 +    char *slash = strrchr(parent, '/');
 +    if (!slash) status = EINVAL;
 +    else {
-+      *slash = '\0';struct statfs volume;
-+      if (statfs(parent, &volume) != 0) status = EIO;
-+      else if (volume.f_bsize <= 0 || volume.f_bavail < 0 ||
++      *slash = '\0';struct statvfs volume;
++      if (statvfs(parent, &volume) != 0) status = EIO;
++      else if (volume.f_frsize == 0 ||
 +               total_bytes > UINT64_MAX - 536870912ULL ||
-+               (uint64_t)volume.f_bavail * (uint64_t)volume.f_bsize < total_bytes + 536870912ULL) status = ENOSPC;
++               (uint64_t)volume.f_bavail < (total_bytes + 536870912ULL) / volume.f_frsize +
++                   ((total_bytes + 536870912ULL) % volume.f_frsize != 0)) status = ENOSPC;
 +    }
 +  }
    if (status == 0) {
      bool renamed = false;
      const char *copy_source = operation == GAME_STORAGE_UNPACK
-@@ -3714,8 +3798,18 @@
+@@ -4260,8 +4344,18 @@ static void *storage_job_thread_main(void *arg) {
          g_storage_job.processed_files = total_files;
          pthread_mutex_unlock(&g_storage_job.mutex);
        }
@@ -290,7 +310,7 @@
      }
    }
  
-@@ -3833,12 +3927,20 @@
+@@ -4428,12 +4522,20 @@ static void handle_storage_eject(struct MHD_Connection *connection,
  static int start_storage_job(const char *title_id,
                               const char *destination_dir,
                               game_storage_operation_t operation,
@@ -312,7 +332,7 @@
    if (status != 0)
      return status;
    if (operation == GAME_STORAGE_UNPACK &&
-@@ -4844,8 +4946,19 @@
+@@ -5901,8 +6003,19 @@ static void handle_game_storage_operation(
    storage_job_snapshot_t accepted;
    memset(&accepted, 0, sizeof(accepted));
    const char *error = NULL;
@@ -333,9 +353,11 @@
    if (status != 0) {
      if (operation == GAME_STORAGE_DELETE && error &&
          strcmp(error, "source_missing") == 0) {
+diff --git a/src/sm_game_lifecycle.c b/src/sm_game_lifecycle.c
+index 58d53d7..a9c19c1 100644
 --- a/src/sm_game_lifecycle.c
 +++ b/src/sm_game_lifecycle.c
-@@ -1351,6 +1351,11 @@
+@@ -1248,6 +1248,11 @@ void stop_game_lifecycle_watcher(void) {
    close_game_lifecycle_wake_pipe();
  }
  
@@ -347,6 +369,8 @@
  bool sm_game_lifecycle_has_active_game(void) {
    return atomic_load(&g_active_game_pid) > 0 ||
           atomic_load(&g_game_exit_handoff_pending);
+diff --git a/src/sm_shellcore_service.c b/src/sm_shellcore_service.c
+index bdaaaf0..23f1f1b 100644
 --- a/src/sm_shellcore_service.c
 +++ b/src/sm_shellcore_service.c
 @@ -8,6 +8,7 @@
@@ -357,7 +381,7 @@
  #include "sm_gameinfo.h"
  #include "sm_image.h"
  #include "sm_limits.h"
-@@ -497,6 +498,11 @@
+@@ -504,6 +505,11 @@ bool sm_shellcore_ensure_title_runtime(const char *title_id) {
  
  static int handle_launch_request(const char *title_id) {
    pthread_mutex_lock(&g_service.mutex);
@@ -369,12 +393,10 @@
    bool was_busy = launch_preparation_pending_locked();
    g_service.pending_launch_title_id[0] = '\0';
    g_service.pending_sandbox_ready_handled = false;
-@@ -962,6 +968,36 @@
-         return true;
-   }
+@@ -1010,6 +1016,36 @@ bool sm_shellcore_source_is_protected(const char *path) {
    return false;
-+}
-+
+ }
+ 
 +static bool storage_title_allowed_locked(const char *title_id) {
 +  return !runtime_sleep_mode_active() && !g_service.stop_requested &&
 +    sm_botty_storage_allowed(title_id, g_service.prepared.title_id,
@@ -403,50 +425,59 @@
 +  if (allowed) g_service.external_mutation_in_progress = true;
 +  pthread_mutex_unlock(&g_service.mutex);
 +  return allowed;
- }
- 
++}
++
  bool sm_shellcore_try_begin_external_mutation(void) {
+   pthread_mutex_lock(&g_service.mutex);
+   bool available = !g_service.external_mutation_in_progress &&
+diff --git a/src/sm_storage.c b/src/sm_storage.c
+index 4356d0e..cfb0615 100644
 --- a/src/sm_storage.c
 +++ b/src/sm_storage.c
-@@ -176,12 +176,12 @@
-                              mode_t mode, void *buffer,
-                              sm_storage_progress_fn progress,
-                              sm_storage_cancel_fn cancel, void *ctx) {
+@@ -448,11 +448,11 @@ static int copy_regular_file(const char *source, const char *destination, mode_t
+   uint64_t started = smb_copy ? monotonic_time_us() : 0;
+   storage_copy_stats_t stats = {0};
+ #endif
 -  int source_fd = open(source, O_RDONLY);
 +  int source_fd = open(source, O_RDONLY | O_NOFOLLOW);
-   if (source_fd < 0)
-     return -1;
+   if (source_fd < 0) return -1;
    (void)posix_fadvise(source_fd, 0, 0, POSIX_FADV_SEQUENTIAL);
-   int destination_fd =
--      open(destination, O_WRONLY | O_CREAT | O_EXCL, mode & 0777);
-+      open(destination, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode & 0777);
+   bool smb_download = sm_smb_path(source) && !sm_smb_path(destination);
+-  int destination_fd = open(destination, O_WRONLY | O_CREAT | O_EXCL,
++  int destination_fd = open(destination, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW,
+                             smb_download ? 0777 : mode & 0777);
    if (destination_fd < 0) {
      int saved_errno = errno;
-     (void)close(source_fd);
-@@ -189,7 +189,9 @@
+@@ -461,11 +461,13 @@ static int copy_regular_file(const char *source, const char *destination, mode_t
      return -1;
    }
  
 -  int result = 0;
 +  struct stat before, after, copied;
 +  int result = fstat(source_fd, &before);
-+  if (result == 0 && !S_ISREG(before.st_mode)) { errno = EINVAL; result = -1; }
-   while (result == 0) {
-     if (storage_operation_cancelled(cancel, ctx)) {
-       errno = ECANCELED;
-@@ -225,6 +227,11 @@
-       if (progress)
-         progress((uint64_t)write_size, 0, ctx);
-     }
-+  }
-+  if (result == 0 && (fstat(source_fd, &after) != 0 ||
++  if (!result && !S_ISREG(before.st_mode)) { errno = EINVAL; result = -1; }
+   int pipelined = 0;
+ #ifdef SM_VFS_ENABLED
+   uint64_t opened = smb_copy ? monotonic_time_us() : 0;
+-  if (source_size >= 512u * 1024u &&
++  if (!result && source_size >= 512u * 1024u &&
+       sm_vfs_remote_fd(source_fd) != sm_vfs_remote_fd(destination_fd)) {
+     pipelined = copy_file_read_ahead(source_fd, destination_fd, source_size, buffer, progress,
+                                      cancel, ctx, &stats);
+@@ -490,6 +492,12 @@ static int copy_regular_file(const char *source, const char *destination, mode_t
+     completed += (uint64_t)read_size;
+     result = write_storage_buffer(destination_fd, buffer, (size_t)read_size, progress, cancel, ctx);
+   }
++  // Validate before queuing a remote flush, which can close the source descriptor.
++  if (!result && (fstat(source_fd, &after) != 0 ||
 +      fstat(destination_fd, &copied) != 0 || before.st_size != after.st_size ||
 +      before.st_mtime != after.st_mtime || copied.st_size != before.st_size)) {
 +    errno = EIO; result = -1;
-   }
-   int saved_errno = result != 0 ? errno : 0;
-   if (result == 0 && fdatasync(destination_fd) != 0) {
-@@ -531,6 +538,11 @@
++  }
+   // Apply explicitly: open's mode is filtered by the process umask.
+   if (!result && smb_download && fchmod(destination_fd, 0777) != 0) result = -1;
+ #ifdef SM_VFS_ENABLED
+@@ -845,6 +853,11 @@ int sm_storage_move_path_progress(const char *source, const char *destination,
    if (sm_storage_copy_path_progress(source, destination, progress, cancel,
                                      ctx) != 0)
      return -1;
