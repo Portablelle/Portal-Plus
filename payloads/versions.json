@@ -10,14 +10,14 @@
     },
     {
       "file": "shadowmountplus.elf",
-      "version": "1.7beta10-botty.1",
-      "digest": "sha256:e7f5e02335eff01a78ba9e8aba51ce3367610bdeb82e67293fff9a3fdde19c88",
-      "upstream_version": "1.7beta10",
-      "upstream_digest": "sha256:8c6798232ae2a8fbcd209ab97fc4f8d4d47cf23b7eecfaa6349c0bfeb8e4a3d3",
-      "upstream_url": "https://github.com/drakmor/ShadowMountPlus/releases/download/1.7beta10/shadowmountplus.elf",
-      "upstream_published_at": "2026-10-28T21:54:23Z",
+      "version": "1.7beta11-botty.1",
+      "digest": "sha256:dcd03cdb8360c640b4b213f0ed8cdfbd749884ad727e2cb9e506e96003f4272d",
+      "upstream_version": "1.7beta11",
+      "upstream_digest": "sha256:08c843018750bef013fe3a4de5f80c5c9738c6c2dafa2406e6b6e68d7585f3da",
+      "upstream_url": "https://github.com/drakmor/ShadowMountPlus/releases/download/1.7beta11/shadowmountplus.elf",
+      "upstream_published_at": "2026-10-29T21:22:45Z",
       "source": "homebrew/shadowmountplus",
-      "source_revision": "a8e400487effa1a63c81943ad16fef2d9ea83cfb",
+      "source_revision": "30c5a2b791ada7a78ccbda92f4bc3b1fa1cf27dd",
       "corresponding_source": "vps-site/payloads/shadowmountplus-source.tar.gz"
     },
     {

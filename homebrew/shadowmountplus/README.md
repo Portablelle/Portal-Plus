@@ -1,10 +1,18 @@
-# ShadowMountPlus 1.7beta10-botty.1
+# ShadowMountPlus 1.7beta11-botty.1
 
-Modified upstream [1.7beta10](https://github.com/drakmor/ShadowMountPlus/releases/tag/1.7beta10),
-a prerelease pinned to `a8e400487effa1a63c81943ad16fef2d9ea83cfb`.
+Modified upstream [1.7beta11](https://github.com/drakmor/ShadowMountPlus/releases/tag/1.7beta11),
+a prerelease pinned to `30c5a2b791ada7a78ccbda92f4bc3b1fa1cf27dd`.
 Portal+ delivers this payload; its version is independent of Botty+ and Portal+.
 
 ## Upstream improvements
+
+Beta11 unifies PC/local/SMB PKG queues, supports batches of up to 32 PC files
+with game/update/DLC ordering, retains unfinished packages after failures or
+cancellation, and adds remaining-time estimates. It improves PS4 DLC and PS5
+media-package detection, fixes premature DLC failures (0x80E90004), and improves
+read-only destinations. Its patched json-c 0.19 fixes release-time memory leaks
+on repeated scans; the complete dependency source is vendored and hash-pinned.
+These additions remain in ShadowMount's web interface/API.
 
 Beta9 adds SMB shares and improves network transfers. Beta10 adds safe USB
 ejection, scans and operations on other games during gameplay, SMB guest/auth
@@ -63,7 +71,7 @@ Original downloads, archives and saves are not changed by preparing this upgrade
 ## Build and package
 
 All compilations run on the dedicated Linux server, in an isolated build tree.
-The source archive, SDK stub and upstream asset metadata are pinned in
+The source archives, SDK stub and upstream asset metadata are pinned in
 `provenance.json`; the SDK/runtime distributions are hash-pinned in `Dockerfile`.
 
 ```sh
@@ -73,6 +81,8 @@ docker build --platform linux/amd64 -t portal-shadowmount-build:0.43 .
 docker run --rm --platform linux/amd64 -v "$PWD:/work" portal-shadowmount-build:0.43
 ```
 
+`build.sh` first builds the patched json-c for PS5 and runs upstream's host
+release-ownership regression under ASan/UBSan with leak detection.
 `tests/run.sh` compiles the production ShellCore hooks and assembly with isolated
 process-memory doubles. It checks lost-hook recovery, foreign/changed code,
 transient reads, armed requests, partial writes, rollback/detach failures,
