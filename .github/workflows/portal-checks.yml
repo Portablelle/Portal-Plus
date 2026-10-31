@@ -5,20 +5,65 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+  schedule:
+    - cron: '17 3 * * *'
+
+concurrency:
+  group: portal-checks-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
+  pull-requests: read
 
 jobs:
-  verify:
+  changes:
     runs-on: [self-hosted, linux, x64, portal-plus-ci]
-    # Full package integrity and composition checks run on a 2-CPU runner.
-    timeout-minutes: 30
+    timeout-minutes: 2
+    outputs:
+      runner_infra: ${{ steps.changes.outputs.runner_infra }}
+      docs_only: ${{ steps.changes.outputs.docs_only }}
+    steps:
+      - name: Detect pull request changes
+        id: changes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          runner_infra=true
+          docs_only=false
+          if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
+            if files=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --jq '.[].filename') && [[ -n "$files" ]]; then
+              runner_infra=false
+              docs_only=true
+              while IFS= read -r file; do
+                case "$file" in
+                  infra/ci-runner/*|.github/workflows/portal-checks.yml) runner_infra=true ;;
+                esac
+                case "$file" in
+                  docs/*) ;;
+                  */*|LICENSE*) docs_only=false ;;
+                  *.md) ;;
+                  *) docs_only=false ;;
+                esac
+              done <<< "$files"
+            fi
+          fi
+          echo "runner_infra=$runner_infra" >> "$GITHUB_OUTPUT"
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+
+  node-tests:
+    needs: changes
+    runs-on: [self-hosted, linux, x64, portal-plus-ci]
+    timeout-minutes: 15
     steps:
       # The runner workspace is memory-backed. Keeping both the Git pack and
       # the extracted engine sources exceeds its 4 GiB limit. Stream the exact
-      # event commit once; all package hashes and tests still run below.
+      # event commit once; package hashes and tests run in the jobs below.
       - name: Export the event commit without a duplicate Git object store
+        if: needs.changes.outputs.docs_only != 'true'
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
@@ -26,13 +71,54 @@ jobs:
           gh api "repos/$GITHUB_REPOSITORY/tarball/$GITHUB_SHA" |
             tar -xz --strip-components=1 -C "$GITHUB_WORKSPACE"
       - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: needs.changes.outputs.docs_only != 'true'
+        with:
+          node-version: '24'
+      - name: Test portal and installer contracts
+        if: needs.changes.outputs.docs_only != 'true'
+        run: node --test --test-concurrency=2 tests/*.test.mjs
+
+  python-tests:
+    needs: changes
+    runs-on: [self-hosted, linux, x64, portal-plus-ci]
+    timeout-minutes: 20
+    steps:
+      # The runner workspace is memory-backed. Keeping both the Git pack and
+      # the extracted engine sources exceeds its 4 GiB limit. Stream the exact
+      # event commit once; package hashes and tests run in the jobs below.
+      - name: Export the event commit without a duplicate Git object store
+        if: needs.changes.outputs.docs_only != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh api "repos/$GITHUB_REPOSITORY/tarball/$GITHUB_SHA" |
+            tar -xz --strip-components=1 -C "$GITHUB_WORKSPACE"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7.0.0
+        if: needs.changes.outputs.docs_only != 'true'
         with:
           node-version: '24'
       - name: Test runner API broker boundaries
+        if: needs.changes.outputs.runner_infra == 'true'
         run: python3 -m unittest discover -s infra/ci-runner -p 'test_*.py' -v
-      - name: Test portal and installer contracts
-        run: node --test tests/*.test.mjs
       - name: Test public exports and main deployment
+        if: needs.changes.outputs.docs_only != 'true'
         run: python3 -m unittest discover -s tests -p 'test_*.py' -v
       - name: Verify committed public packages and hashes
+        if: needs.changes.outputs.docs_only != 'true'
         run: python3 scripts/portal-manifest.py --check
+
+  verify:
+    name: verify
+    needs: [changes, node-tests, python-tests]
+    if: always()
+    runs-on: [self-hosted, linux, x64, portal-plus-ci]
+    timeout-minutes: 2
+    steps:
+      # Docs-only jobs succeed with their export, setup and test steps skipped.
+      - name: Require both test jobs to succeed
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          NODE_RESULT: ${{ needs.node-tests.result }}
+          PYTHON_RESULT: ${{ needs.python-tests.result }}
+        run: test "$CHANGES_RESULT" = success && test "$NODE_RESULT" = success && test "$PYTHON_RESULT" = success

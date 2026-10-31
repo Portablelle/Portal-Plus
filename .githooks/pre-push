@@ -1,0 +1,25 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+cd "$(git rev-parse --show-toplevel)"
+upstream=$(git rev-parse --verify '@{upstream}' 2>/dev/null || printf '%s' origin/main)
+base=$(git merge-base HEAD "$upstream")
+scratch=$(mktemp -d "$PWD/.pre-push.XXXXXX")
+trap 'rm -rf -- "$scratch"' EXIT
+git diff --no-renames --name-only --diff-filter=ACMRD -z "$base" HEAD > "$scratch/files"
+manifest=false
+while IFS= read -r -d '' file; do
+  if [[ -f "$file" ]]; then
+    case "$file" in
+      *.mjs|*.js) node --check -- "$file" ;;
+      *.py) PYTHONPYCACHEPREFIX="$scratch/pycache" python3 -m py_compile "$file" ;;
+    esac
+  fi
+  # The public manifest covers vps-site and uses the source-parts helper.
+  case "$file" in
+    vps-site/*|scripts/portal-manifest.py|scripts/source_parts.py) manifest=true ;;
+  esac
+done < "$scratch/files"
+if [[ "$manifest" == true ]]; then
+  python3 scripts/portal-manifest.py --check
+fi
