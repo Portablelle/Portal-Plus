@@ -44,6 +44,11 @@ python3 scripts/portal-manifest.py --check
 python3 scripts/portal-manifest.py --output dist/portal
 ```
 
+Enable the optional pre-push checks with `git config core.hooksPath .githooks`.
+The hook checks changed JavaScript/Python syntax against the upstream merge-base
+(falling back to `origin/main`) and verifies the portal manifest when its inputs
+change. Use `git push --no-verify` to bypass it.
+
 No Botty+ source checkout or PS5 toolchain is needed. The committed app packages
 are a verified fallback for standalone export. On the VPS, the synchronizer
 assembles Portal+ `main`, Botty+ `main` and the verified Codex PS5 `main` build; a change to any of those commits triggers an
