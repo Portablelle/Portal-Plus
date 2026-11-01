@@ -35,7 +35,7 @@ jobs:
           runner_infra=true
           docs_only=false
           if [[ "$GITHUB_EVENT_NAME" == pull_request ]]; then
-            if files=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --jq '.[].filename') && [[ -n "$files" ]]; then
+            if files=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR/files" --paginate --jq '.[] | .filename, (.previous_filename // empty)') && [[ -n "$files" ]]; then
               runner_infra=false
               docs_only=true
               while IFS= read -r file; do
